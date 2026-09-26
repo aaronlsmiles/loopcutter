@@ -79,3 +79,16 @@ def test_rejects_bad_input():
         loop_length_samples(4, 0, 44100)
     with pytest.raises(ValueError):
         resolve_window(-1, 4, 120, 44100)
+
+
+from loopcutter.timing import rates_that_tile, tiling_error_ms
+
+
+def test_rates_that_tile_depend_on_tempo():
+    assert rates_that_tile(0.5, 128) == [48000]
+    assert rates_that_tile(0.5, 135) == [44100]
+    assert rates_that_tile(0.5, 125) == [44100, 48000]
+
+
+def test_tiling_error_in_ms():
+    assert tiling_error_ms(4, 1, 128, 44100) == pytest.approx(2 / 44100 * 1000)

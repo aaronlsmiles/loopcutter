@@ -114,8 +114,9 @@ def tiling_error_samples(
     slips. This is arithmetic, not a bug: at 128 BPM and 44.1kHz a bar is
     82687.5 samples, and you cannot have half a sample.
 
-    48kHz avoids it for most common tempos - 128 BPM gives exactly 90000
-    samples per bar - which is the main reason to work at 48kHz here.
+    Which rate tiles depends on the tempo. At 48 kHz half bars come out exact
+    at 120, 125, 128, 144, 150 and 160 BPM; at 44.1 kHz at 120, 125, 126, 135,
+    140, 144, 147, 150 and 160. `rates_that_tile` answers it for any tempo.
     """
     long_len = loop_length_samples(long_bars, bpm, sample_rate, beats_per_bar)
     short_len = loop_length_samples(short_bars, bpm, sample_rate, beats_per_bar)
@@ -123,3 +124,21 @@ def tiling_error_samples(
         return 0
     repeats = round(long_bars / short_bars)
     return abs(short_len * repeats - long_len)
+
+
+def tiling_error_ms(long_bars: float, short_bars: float, bpm: float, sample_rate: int,
+                    beats_per_bar: int = 4) -> float:
+    """tiling_error_samples expressed in milliseconds."""
+    return tiling_error_samples(long_bars, short_bars, bpm, sample_rate, beats_per_bar) \
+        / sample_rate * 1000
+
+
+def rates_that_tile(bars: float, bpm: float, beats_per_bar: int = 4,
+                    rates: tuple[int, ...] = (44100, 48000)) -> list[int]:
+    """Sample rates at which `bars` at `bpm` is a whole number of samples."""
+    exact = []
+    for rate in rates:
+        samples = bars * beats_per_bar * rate * 60 / bpm
+        if abs(samples - round(samples)) < 1e-6:
+            exact.append(rate)
+    return exact
