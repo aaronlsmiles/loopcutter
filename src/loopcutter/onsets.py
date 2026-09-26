@@ -40,7 +40,8 @@ def _track_envelope(mono: np.ndarray, sr: int, chunk_s: float) -> np.ndarray:
     for start in range(0, mono.size, step):
         lo = max(0, start - pad)
         piece = onset_envelope(mono[lo : start + step + pad], sr)
-        first, last = start // HOP, min(total, (start + step) // HOP)
+        first = start // HOP
+        last = total if start + step >= mono.size else (start + step) // HOP
         envelope[first:last] = piece[first - lo // HOP : last - lo // HOP]
     return envelope
 
@@ -58,6 +59,8 @@ def detect_onsets(mono, sr: int, chunk_s: float = CHUNK_S) -> tuple[np.ndarray, 
         return np.array([]), np.array([])
     envelope = _track_envelope(mono, sr, chunk_s)
     peaks = librosa.onset.onset_detect(onset_envelope=envelope, sr=sr, hop_length=HOP, units="frames")
+    if peaks.size == 0:
+        return np.array([]), np.array([])
     starts = librosa.onset.onset_backtrack(peaks, envelope)
     return librosa.frames_to_time(starts, sr=sr, hop_length=HOP), envelope[peaks]
 
