@@ -23,6 +23,7 @@ COMMON_BARS = (0.25, 0.5, 1, 2, 3, 4, 6, 8, 12, 16, 32)
 BAR_TOLERANCE = 0.03
 FILE_START_SLACK_S = 0.005
 LOCAL_FIT = 0.9                 # the share of nearby beats that must sit on the whole-track grid
+LOCAL_MARGIN = 0.1              # how much better a local grid must fit to be used instead
 MANIFEST_FIELDS = ["source", "track_id", "label", "artist", "track", "bars", "bpm", "start",
                    "snap", "variations", "stem", "key", "notes"]
 
@@ -66,14 +67,21 @@ def grid_at(record: TrackRecord, t: float,
     whole = track_grid(record)
     detected = replace(record, override_phase_ms=None)                 # the grid the raw beats were fitted to
     detected = track_grid(detected).shifted(-record.phase_offset_ms / 1000)
-    if local_inliers(detected, cached[0], t) >= LOCAL_FIT:
+    whole_fit = local_inliers(detected, cached[0], t)
+    if whole_fit >= LOCAL_FIT:
         # Flagged for a break or an intro elsewhere; here the whole-track grid, fitted to far
         # more beats, still holds, and its tempo is the more accurate.
         return whole, record.bpm
     try:
         grid = local_grid(*cached, t=t)
     except GridError as exc:
+        if whole_fit > 0:
+            return whole, record.bpm
         raise SnapError(str(exc)) from None
+    if grid.inlier_ratio < whole_fit + LOCAL_MARGIN:
+        # Stray detections around the mark, not a tempo change: a grid fitted to them is
+        # no better, and its tempo is worse.
+        return whole, record.bpm
     shift = (record.phase_offset_ms + (record.override_phase_ms or 0.0)) / 1000
     return (grid.shifted(shift) if shift else grid), nominal_bpm(grid.bpm)
 
