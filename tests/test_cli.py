@@ -3,7 +3,7 @@ import pytest
 import soundfile as sf
 
 from loopcutter.cli import main
-from loopcutter.manifest import load_manifest
+from loopcutter.manifest import ManifestError, load_manifest
 from loopcutter.model import TrackRecord
 from loopcutter.tags import read_tag
 from loopcutter.trackdb import load_tracks, save_tracks
@@ -241,3 +241,44 @@ def test_stem_rows_are_cut_from_the_stem_and_timed_on_the_full_mix(tmp_path, cli
     assert main(["cut", "manifests/s.csv"]) == 0
     loop, _ = sf.read(str(ws.loops / "aiff" / "bass" / "125-129" / "Artist - Clicks [A1][128][4bar][bass].aiff"))
     assert np.max(np.abs(loop)) == pytest.approx(0.5 * np.max(np.abs(audio)), rel=0.05)
+
+
+def test_a_loop_and_a_oneshot_at_one_spot_do_not_break_the_tiling_note(tmp_path, click_track, monkeypatch):
+    ws = _ws(tmp_path, click_track, monkeypatch)
+    master = ws.masters / "Artist - Clicks.aiff"
+    (ws.manifests / "s.csv").write_text("source,label,kind,bars,bpm,start,end\n"
+                                        f"{master},A1,loop,4,128,15.0,\n{master},A1,oneshot,,,15.0,15.5\n")
+    assert main(["cut", "manifests/s.csv", "--dry-run"]) == 0
+
+
+def test_a_stem_row_without_a_track_is_cut_from_its_source_with_a_note(tmp_path, click_track, monkeypatch, capsys):
+    ws = _ws(tmp_path, click_track, monkeypatch)
+    (ws.manifests / "s.csv").write_text("source,label,bars,bpm,start,stem\n"
+                                        f"{ws.masters / 'Artist - Clicks.aiff'},A1,4,128,15.0,drums\n")
+    assert main(["cut", "manifests/s.csv"]) == 0
+    assert "cut from its source as given" in capsys.readouterr().out
+
+
+def test_a_row_xfade_of_zero_beats_the_command_line(tmp_path, click_track, monkeypatch):
+    from loopcutter.manifest import load_manifest as load
+
+    ws = _ws(tmp_path, click_track, monkeypatch)
+    path = ws.manifests / "s.csv"
+    path.write_text(f"source,label,bars,bpm,start,xfade_ms\n{ws.masters / 'Artist - Clicks.aiff'},A1,4,128,15.0,0\n")
+    assert load(path)[0].xfade_ms == 0.0
+    path.write_text(f"source,label,bars,bpm,start,xfade_ms\n{ws.masters / 'Artist - Clicks.aiff'},A1,4,128,15.0,-5\n")
+    with pytest.raises(ManifestError, match="xfade_ms"):
+        load(path)
+
+
+def test_resolve_refuses_a_downbeat_row_on_a_moving_tempo_and_leaves_complete_rows_alone(
+        tmp_path, click_track, monkeypatch, capsys):
+    ws = _ws(tmp_path, click_track, monkeypatch)
+    _flag(ws, inlier_ratio=0.5, flags="grid-fit")
+    path = ws.manifests / "s.csv"
+    path.write_text("track_id,label,bars,downbeat,start_bar\nArtist - Clicks,A1,4,0.0,9\n")
+    assert main(["resolve", "manifests/s.csv"]) == 1
+    assert "give a start" in capsys.readouterr().err
+    master = ws.masters / "Artist - Clicks.aiff"
+    path.write_text(f"source,track_id,label,bars,bpm,start,key\n{master},Artist - Clicks,A1,4,128,15.0,8A\n")
+    assert main(["resolve", "manifests/s.csv"]) == 0                      # no beat cache needed for a done row

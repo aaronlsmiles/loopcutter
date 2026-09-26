@@ -1,6 +1,6 @@
 [project]
 name = "loopcutter"
-version = "0.1.0"
+version = "0.2.0"
 description = "Cut sample-accurate loops out of full tracks, driven by a manifest, for live loop-based sets"
 readme = "README.md"
 license = "MIT"

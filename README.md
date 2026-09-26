@@ -357,7 +357,9 @@ a stem go under `full/`, and one-shots under `<stem>/oneshots/`, named
 
 A row that names a `stem` and a `track_id` is cut from that track's separated
 stem, while its timing is still checked on the full mix, where the attacks
-are. `cut` names any stem that hasn't been separated yet.
+are. `cut` names any stem that hasn't been separated yet. A `stem` row without
+a `track_id` is cut from its `source` as given, with a note, so point `source`
+at the stem file if you separated it yourself.
 
 AIFF loops are tagged with BPM, key, stem (as the grouping), title, artist and
 a comment holding the Camelot key and label. WAV loops are left untagged by

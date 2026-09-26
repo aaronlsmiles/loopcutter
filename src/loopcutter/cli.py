@@ -60,6 +60,7 @@ def _tiling_warnings(specs) -> list[str]:
         groups[(str(spec.source), spec.label, spec.start_seconds)].append(spec)
     messages = []
     for members in groups.values():
+        members = [m for m in members if m.kind == "loop"]       # one-shots have no tempo to tile
         if len(members) < 2:
             continue
         try:
@@ -249,8 +250,12 @@ def _cmd_resolve(args) -> int:
                 raise ValueError("snap must be beat, bar or empty")
             if mode and not row.get("start"):
                 raise ValueError("snap needs a start")
-            start = parse_position(row["start"]) if row.get("start") else 0.0
-            grid, bpm = grid_at(record, start, beats_for)
+            done = not mode and row.get("bpm") and row.get("source")
+            if not row.get("start") and not row.get("bpm") and "grid-fit" in record.flags.split(";"):
+                raise ValueError("this track's tempo moves, so give a start (or a bpm) for this row")
+            at = row.get("start") or row.get("downbeat")
+            start = parse_position(at) if at else 0.0
+            grid, bpm = (None, 0.0) if done else grid_at(record, start, beats_for)
             if mode and "phase" in record.flags.split(";") and record.override_phase_ms is None:
                 raise ValueError("this track's grid phase isn't confident - set override_phase_ms "
                                  "in tracks.csv, or mark it in rekordbox and import")
@@ -295,6 +300,9 @@ def _cmd_stems(args) -> int:
         try:
             raw = separate(record.master, ws.stems, engine=args.engine, model=model)
             stems = conform_stems(raw, record.master, ws.stems / track_id)
+        except ImportError as exc:
+            print(f"error: {exc.name or exc} isn't installed - install loopcutter[stems]", file=sys.stderr)
+            return 2
         except (RuntimeError, OSError, subprocess.CalledProcessError) as exc:
             print(f"  FAIL {track_id}: {exc}", file=sys.stderr)
             failures += 1
@@ -361,6 +369,9 @@ def _cmd_cut(args) -> int:
             # keep the track's name: the file is now bass.aiff, but the loop is still this track's
             timing_source = spec.source
             spec = replace(spec, source=stem_file, track=spec.track or spec.source.stem)
+        elif spec.stem and spec.stem != "full":
+            print(f"  note: row {spec.row_number}: the {spec.stem} row is cut from its source as given; "
+                  "give it a track_id in a workspace to cut it from separated stems")
         record = tracks.get(spec.track_id) if spec.track_id else None
         out_dir = out_root / library_subdir(spec) if layout == "library" else out_root
         try:
@@ -371,7 +382,7 @@ def _cmd_cut(args) -> int:
             else:
                 result = cut_loop(spec, out_dir=out_dir, fmt=args.format, subtype=args.subtype,
                                   snap_ms=args.snap_ms, fade_ms=args.fade_ms, trim_db=args.trim_db,
-                                  xfade_ms=spec.xfade_ms or args.xfade_ms,
+                                  xfade_ms=args.xfade_ms if spec.xfade_ms is None else spec.xfade_ms,
                                   filename=build_filename(spec, args.format))
         except (FileNotFoundError, ValueError) as exc:
             print(f"  FAIL row {spec.row_number}: {exc}", file=sys.stderr)

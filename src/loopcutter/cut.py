@@ -101,6 +101,9 @@ def cut_loop(
 
     snap_radius = int(round(snap_ms / 1000.0 * info.samplerate))
     xfade = int(round(xfade_ms / 1000.0 * info.samplerate))
+    if xfade < 0 or xfade >= window.length_samples:
+        raise ValueError(f"row {spec.row_number}: a {xfade_ms:g} ms crossfade doesn't fit "
+                         f"inside a {window.length_samples}-sample loop")
     read_start = max(0, window.start_sample - snap_radius - xfade)
     read_stop = min(info.frames, window.end_sample + snap_radius + 1)
 
@@ -165,8 +168,13 @@ def cut_oneshot(spec: LoopSpec, out_dir, fmt: str = "aiff", subtype: str = "PCM_
         raise FileNotFoundError(f"row {spec.row_number}: source not found: {spec.source}")
     info = sf.info(str(spec.source))
     start = int(round(spec.start_seconds * info.samplerate))
-    end = min(info.frames, int(round(spec.end_seconds * info.samplerate)))
+    end = int(round(spec.end_seconds * info.samplerate))
+    if end > info.frames:
+        raise ValueError(f"row {spec.row_number}: the one-shot ends at {spec.end_seconds:.3f}s, "
+                         f"past the end of the file ({info.frames / info.samplerate:.3f}s)")
     radius = int(round(snap_ms / 1000.0 * info.samplerate))
+    if end - start < 2 * int(round(DEFAULT_FADE_MS / 1000.0 * info.samplerate)):
+        raise ValueError(f"row {spec.row_number}: the one-shot is too short to fade")
     read_start = max(0, start - radius)
     block, _ = sf.read(str(spec.source), start=read_start, stop=end, dtype="float32", always_2d=True)
     snapped = _find_zero_crossing(block, start - read_start, radius, direction="backward")

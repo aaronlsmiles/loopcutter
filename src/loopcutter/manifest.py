@@ -39,7 +39,7 @@ class LoopSpec:
     snap: str = ""
     kind: str = "loop"
     end_seconds: float | None = None
-    xfade_ms: float = 0.0
+    xfade_ms: float | None = None      # None: use the command line's --xfade-ms
 
     @property
     def slug(self) -> str:
@@ -126,6 +126,16 @@ def _parse_variations(row: dict[str, str], row_number: int) -> list[float]:
         if value not in seen:
             seen.append(value)
     return sorted(seen, reverse=True)
+
+
+def _xfade(row: dict[str, str], row_number: int) -> float | None:
+    raw = row.get("xfade_ms")
+    if raw in (None, ""):
+        return None
+    value = float(raw)
+    if value < 0:
+        raise ManifestError(f"row {row_number}: xfade_ms can't be negative, got {value:g}")
+    return value
 
 
 def load_manifest(path: str | Path, audio_root: str | Path | None = None) -> list[LoopSpec]:
@@ -215,7 +225,7 @@ def load_manifest(path: str | Path, audio_root: str | Path | None = None) -> lis
                         extra={k: v for k, v in row.items() if k not in known and v},
                         track_id=row.get("track_id") or None,
                         snap=snap,
-                        xfade_ms=float(row.get("xfade_ms") or 0),
+                        xfade_ms=_xfade(row, offset),
                     )
                 )
 

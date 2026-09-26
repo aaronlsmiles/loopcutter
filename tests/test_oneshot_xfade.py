@@ -43,3 +43,17 @@ def test_crossfade_makes_the_wrap_continuous(tmp_path):
     assert loop[0, 0] == pytest.approx(source[result.start_sample, 0], abs=2e-3)
     assert len(loop) == result.length_samples
     assert verify_cut(result).ok
+
+
+def test_a_oneshot_must_lie_inside_its_file(click_track, tmp_path):
+    path = tmp_path / "o.csv"
+    path.write_text(f"source,label,kind,start,end\n{click_track['path']},V1,oneshot,29.5,40.0\n")
+    with pytest.raises(ValueError, match="row 2.*past the end"):
+        cut_oneshot(load_manifest(path)[0], tmp_path / "out", fmt="wav")
+
+
+def test_an_xfade_longer_than_the_loop_is_refused(click_track, tmp_path):
+    path = tmp_path / "p.csv"
+    path.write_text(f"source,label,bars,bpm,start\n{click_track['path']},P1,0.25,128,15.0\n")
+    with pytest.raises(ValueError, match="crossfade"):
+        cut_loop(load_manifest(path)[0], tmp_path / "out", fmt="wav", xfade_ms=500)

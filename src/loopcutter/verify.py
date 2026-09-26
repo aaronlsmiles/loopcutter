@@ -79,7 +79,8 @@ def verify_cut(result: CutResult, check_bpm: bool = False,
 
     loop = result.spec.kind == "loop"
     expected = (loop_length_samples(result.spec.bars, result.spec.bpm, sample_rate,
-                                    result.spec.beats_per_bar) if loop else result.length_samples)
+                                    result.spec.beats_per_bar) if loop
+                else int(round(result.spec.end_seconds * sample_rate)) - result.start_sample)
     report.checks.append(Check("sample_count", len(audio) == expected,
                                f"got {len(audio)}, expected {expected}"))
     report.checks.append(Check("sample_rate", sample_rate == result.sample_rate,
