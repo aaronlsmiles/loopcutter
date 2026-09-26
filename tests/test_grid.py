@@ -95,3 +95,13 @@ def test_real_detector_on_clicks(click_track):
     audio, sr = sf.read(str(click_track["path"]), dtype="float32", always_2d=True)
     grid, _, _ = analyse_grid(audio.mean(axis=1), sr)       # downloads beat_this weights once
     assert grid.bpm == pytest.approx(128.0, abs=0.05)
+
+
+def test_compare_grids_reads_a_grid_stored_in_whole_milliseconds():
+    grid = Grid(period=P128, phase=0.0)
+    app = np.round((np.arange(400) * P128 + 0.041) * 1000) / 1000     # rekordbox keeps beat times in ms
+    report = compare_grids(grid, app)
+    assert report["app_bpm"] == pytest.approx(128.0, abs=0.005)
+    assert report["app_offset_ms"] == pytest.approx(41.0, abs=0.5)
+    gappy = np.delete(app, np.arange(100, 140))
+    assert compare_grids(grid, gappy)["app_bpm"] == pytest.approx(128.0, abs=0.005)
