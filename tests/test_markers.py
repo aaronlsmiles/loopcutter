@@ -1,9 +1,18 @@
 from pathlib import Path
 from types import SimpleNamespace as NS
 
+import numpy as np
 import pytest
+import soundfile as sf
 
-from loopcutter.markers import from_rekordbox_db, from_rekordbox_xml, from_serato, parse_note
+from loopcutter.markers import (
+    from_rekordbox_db,
+    from_rekordbox_xml,
+    from_serato,
+    parse_note,
+    rekordbox_beats,
+    serato_beats,
+)
 from loopcutter.model import Marker
 
 
@@ -83,3 +92,52 @@ def test_rekordbox_xml_reader_takes_memory_cues_only(tmp_path):
     markers = from_rekordbox_xml(tmp_path / "rb.xml", playlist="Sources")
     assert [(m.start, m.end, m.name) for m in markers] == [(12.12, 19.62, "A1 bass 2,1"), (40.12, None, "")]
     assert all(Path(m.path) == audio for m in markers)
+
+
+def _aif(path):
+    sf.write(str(path), np.zeros((4800, 2), dtype="float32"), 48000, format="AIFF")
+    return path
+
+
+def test_from_serato_reads_a_dot_aif_with_no_serato_tags(tmp_path):
+    """serato-tools only opens ".mp3"/".aiff" path strings; ".aif" needs our own mutagen open."""
+    path = _aif(tmp_path / "t.aif")
+    assert from_serato([path]) == []
+
+
+def test_serato_beats_returns_empty_for_a_dot_aif_with_no_grid(tmp_path):
+    path = _aif(tmp_path / "t.aif")
+    assert serato_beats(path).size == 0
+
+
+def test_from_serato_skips_an_unreadable_file_and_still_reads_the_rest(tmp_path):
+    good = tmp_path / "good.mp3"
+    bad = tmp_path / "bad.aiff"
+    entries = [NS(position=12120, name="A1")]
+
+    def reader(path):
+        if path == bad:
+            raise ValueError("untested Serato tag version")
+        return entries
+
+    with pytest.warns(UserWarning, match="bad.aiff"):
+        markers = from_serato([bad, good], reader=reader)
+    assert markers == [Marker(good, 12.12, None, "A1", "serato")]
+
+
+class _FakeAnlzNoBeatGrid:
+    def get(self, key):
+        raise IndexError
+
+
+class _FakeDBNoBeatGrid:
+    def get_content(self, FolderPath):
+        return NS(ID="c1")
+
+    def read_anlz_file(self, content, kind):
+        return _FakeAnlzNoBeatGrid()
+
+
+def test_rekordbox_beats_returns_empty_when_analysis_has_no_beat_grid_tag(tmp_path):
+    """pyrekordbox's anlz.get('beat_grid') raises IndexError when the PQTZ tag is missing."""
+    assert rekordbox_beats(_FakeDBNoBeatGrid(), tmp_path / "x.aiff").size == 0

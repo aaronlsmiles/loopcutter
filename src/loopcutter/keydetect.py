@@ -5,11 +5,15 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 import mutagen
+import soundfile as sf
 
+from .audio_io import read_audio
 from .keys import Key, KeyParseError, parse_key
 
 _CAMELOT_IN_TEXT = re.compile(r"\b(1[0-2]|[1-9])\s*([AB])\b", re.IGNORECASE)
@@ -48,10 +52,15 @@ def key_from_tags(path) -> tuple[Key | None, str]:
 
 
 def key_from_keyfinder(path) -> Key | None:
+    """keyfinder-cli can't resample 24-bit or float PCM itself, so hand it 16-bit instead."""
     binary = shutil.which("keyfinder-cli")
     if not binary:
         return None
-    run = subprocess.run([binary, "-n", "camelot", str(path)], capture_output=True, text=True)
+    audio, sr = read_audio(path)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        wav_path = Path(tmp_dir) / "keyfinder.wav"
+        sf.write(str(wav_path), audio, sr, subtype="PCM_16")
+        run = subprocess.run([binary, "-n", "camelot", str(wav_path)], capture_output=True, text=True)
     if run.returncode != 0:
         return None
     try:
