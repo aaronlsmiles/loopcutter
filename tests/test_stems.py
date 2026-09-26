@@ -199,3 +199,16 @@ def test_separators_keep_level_and_resolution(tmp_path, monkeypatch):
     monkeypatch.setattr(stems.subprocess, "run", lambda cmd, check: commands.append(cmd))
     stems._demucs(tmp_path / "Song.aiff", tmp_path, "m")
     assert "--float32" in commands[0] and commands[0][commands[0].index("--clip-mode") + 1] == "none"
+
+
+def test_a_stem_a_few_samples_off_on_its_own_still_passes_when_the_sum_lines_up(tmp_path):
+    sr = 44100
+    drums = _noise(tmp_path / "a.wav", sr, 0)
+    rng = np.random.default_rng(5)
+    bass = np.convolve(rng.normal(0.0, 1.0, drums.size), np.ones(100) / 100, "same").astype("float32")
+    bass *= 0.1 / np.std(bass)                                   # band-limited, like a real bass stem
+    master = _master(tmp_path, [drums, bass])
+    near = np.roll(bass, 4)                                      # a bass stem's phase, not a timing error
+    sf.write(str(tmp_path / "b.wav"), np.column_stack([near, near]), sr)
+    out = conform_stems({"drums": tmp_path / "a.wav", "bass": tmp_path / "b.wav"}, master, tmp_path / "out")
+    assert set(out) == {"drums", "bass"}

@@ -27,6 +27,8 @@ STEM_NAMES = ("drums", "bass", "other", "vocals", "guitar", "piano", "instrument
 ALIGN_SECONDS = 20.0
 GAIN_TOLERANCE_DB = 1.0
 MIN_STEM_SHARE = 0.01  # a stem under -20 dB of the master is too faint to align on its own
+STEM_LAG_S = 0.001      # one stem against the full mix: band-limited stems (bass) correlate a few
+                        # samples off with no timing error; the sum is held to one sample
 COMPLETE_MARKER = "complete.json"
 _STEM_IN_NAME = re.compile(r"\((\w+)\)")
 
@@ -154,7 +156,7 @@ def _prove(audio: dict[str, np.ndarray], master: np.ndarray, rate: int, label: s
         if np.dot(part, part) < MIN_STEM_SHARE * energy:
             continue
         stem_lag, _ = _lag(part, ref)
-        if abs(stem_lag) > 1:
+        if abs(stem_lag) > STEM_LAG_S * rate:
             raise RuntimeError(f"{name} doesn't line up with {label}: {stem_lag} samples out")
     # least squares: the k that best fits mix = k * master at the aligned lag
     gain = corr[lag] / energy
