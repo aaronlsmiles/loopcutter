@@ -75,6 +75,7 @@ def test_lenient_turns_alignment_failures_into_warnings(tmp_path, click_track, m
     (ws.manifests / "s.csv").write_text(
         f"source,label,bars,bpm,start\n{ws.masters / 'Artist - Clicks.aiff'},A1,4,128,15.04\n")
     assert main(["cut", "manifests/s.csv"]) == 1                    # 40 ms late
+    assert not list(ws.loops.rglob("*.aiff"))                        # a failed loop never stays in the library
     assert main(["cut", "manifests/s.csv", "--lenient"]) == 0
     assert "warn beat_alignment" in capsys.readouterr().out
 

@@ -404,7 +404,8 @@ def _cmd_cut(args) -> int:
                 report.checks.append(Check("tagging", False, "tagging changed the audio length"))
         if not report.ok:
             failures += 1
-            print(f"  FAIL {result.output.name}", file=sys.stderr)
+            result.output.unlink(missing_ok=True)          # a loop that failed its checks never reaches the library
+            print(f"  FAIL {result.output.name} (not kept)", file=sys.stderr)
             for check in report.failures:
                 print(f"         {check.name}: {check.detail}", file=sys.stderr)
             continue
