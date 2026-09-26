@@ -11,6 +11,7 @@ or sampler project that points at them.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from .manifest import LoopSpec
 
@@ -37,3 +38,13 @@ def build_filename(spec: LoopSpec, fmt: str = "aiff") -> str:
 
     suffix = "".join(f"[{sanitise(str(t))}]" for t in tags)
     return f"{sanitise(stub)} {suffix}.{fmt}"
+
+
+def bpm_band(bpm: float, width: int = 5) -> str:
+    low = int(bpm // width) * width
+    return f"{low}-{low + width - 1}"
+
+
+def library_subdir(spec) -> Path:
+    """<stem>/<bpm band>, e.g. bass/125-129; loops without a stem file under full/."""
+    return Path(sanitise(spec.stem or "full")) / bpm_band(spec.bpm)
