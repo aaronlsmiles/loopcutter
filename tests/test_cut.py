@@ -169,3 +169,21 @@ def test_variations_reject_nonsense(click_track, tmp_path):
     )
     with pytest.raises(ManifestError, match="bar numbers"):
         load_manifest(path)
+
+
+def test_find_zero_crossing_direction_picks_which_side_wins():
+    """test_verify.py's roundtrip test can't tell which way the search looks, because
+    15.003 s already sits on a crossing. Pin the direction directly: with a crossing on
+    each side of centre, "backward" must return the earlier one and "both" the later one.
+    """
+    import numpy as np
+
+    from loopcutter.cut import _find_zero_crossing
+
+    centre = 10
+    mono = np.ones(21)
+    mono[centre - 5] = -1.0    # sign change lands the backward crossing at centre - 4
+    mono[centre + 2] = -1.0    # sign change lands the forward crossing at centre + 2
+
+    assert _find_zero_crossing(mono, centre, radius=5, direction="backward") == centre - 4
+    assert _find_zero_crossing(mono, centre, radius=5, direction="both") == centre + 2
