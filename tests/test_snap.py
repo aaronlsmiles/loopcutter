@@ -155,3 +155,11 @@ def test_a_zero_phase_override_confirms_a_phase_flagged_grid(tmp_path):
     marker = Marker(tmp_path / "Artist - Song.mp3", beat + 0.012, None, "A1", "serato")
     result = markers_to_rows([marker], {rec.track_id: rec})
     assert float(result.rows[0]["start"]) == pytest.approx(beat, abs=1e-6)
+
+
+def test_a_start_is_never_before_the_file(tmp_path):
+    grid = track_grid(_rec(tmp_path, phase=P125 - 0.0012))           # beat 0 sits 1.2 ms before the file
+    assert snap_time(0.03, grid).snapped == 0.0
+    early = track_grid(_rec(tmp_path, phase=P125 - 0.030))
+    with pytest.raises(SnapError, match="before the start"):
+        snap_time(0.01, early)

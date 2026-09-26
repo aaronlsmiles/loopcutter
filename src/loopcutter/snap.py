@@ -21,6 +21,7 @@ from .trackdb import find_record
 
 COMMON_BARS = (0.25, 0.5, 1, 2, 3, 4, 6, 8, 12, 16, 32)
 BAR_TOLERANCE = 0.03
+FILE_START_SLACK_S = 0.005
 MANIFEST_FIELDS = ["source", "track_id", "label", "artist", "track", "bars", "bpm", "start",
                    "snap", "variations", "stem", "key", "notes"]
 
@@ -75,6 +76,11 @@ def snap_time(t: float, grid: Grid, mode: str = "beat", max_shift_ms: float = 60
         return SnapResult(t, t, n, grid.is_bar_start(n))
     target = grid.nearest_bar(t) if mode == "bar" else grid.nearest_beat(t)
     n = grid.beat_index(target)
+    if target < 0:
+        # The first beat can sit a hair before the file because the grid leads the attack.
+        if target < -FILE_START_SLACK_S:
+            raise SnapError(f"{t:.3f}s snaps to {target:.3f}s, before the start of the file")
+        target = 0.0
     result = SnapResult(t, target, n, grid.is_bar_start(n))
     if abs(result.shift_ms) > max_shift_ms:
         before = grid.beat_time(math.floor((t - grid.phase) / grid.period))
