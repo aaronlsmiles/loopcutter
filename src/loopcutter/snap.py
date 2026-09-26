@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import csv
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
-from .grid import GridError, local_grid, nominal_bpm
+from .grid import GridError, local_grid, local_inliers, nominal_bpm
 from .markers import parse_note
 from .model import Grid, Marker, SnapResult, TrackRecord
 from .trackdb import find_record
@@ -22,6 +22,7 @@ from .trackdb import find_record
 COMMON_BARS = (0.25, 0.5, 1, 2, 3, 4, 6, 8, 12, 16, 32)
 BAR_TOLERANCE = 0.03
 FILE_START_SLACK_S = 0.005
+LOCAL_FIT = 0.9                 # the share of nearby beats that must sit on the whole-track grid
 MANIFEST_FIELDS = ["source", "track_id", "label", "artist", "track", "bars", "bpm", "start",
                    "snap", "variations", "stem", "key", "notes"]
 
@@ -62,6 +63,13 @@ def grid_at(record: TrackRecord, t: float,
     if cached is None:
         raise SnapError("its beats don't fit one steady grid and there is no beat cache - "
                         f"run `loopcutter scan --force \"{record.track_id}\"`")
+    whole = track_grid(record)
+    detected = replace(record, override_phase_ms=None)                 # the grid the raw beats were fitted to
+    detected = track_grid(detected).shifted(-record.phase_offset_ms / 1000)
+    if local_inliers(detected, cached[0], t) >= LOCAL_FIT:
+        # Flagged for a break or an intro elsewhere; here the whole-track grid, fitted to far
+        # more beats, still holds, and its tempo is the more accurate.
+        return whole, record.bpm
     try:
         grid = local_grid(*cached, t=t)
     except GridError as exc:

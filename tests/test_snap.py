@@ -163,3 +163,16 @@ def test_a_start_is_never_before_the_file(tmp_path):
     early = track_grid(_rec(tmp_path, phase=P125 - 0.030))
     with pytest.raises(SnapError, match="before the start"):
         snap_time(0.01, early)
+
+
+def test_a_track_flagged_for_a_break_uses_its_whole_grid_where_that_still_fits(tmp_path):
+    period = 60 / 124.37
+    raw = np.round((0.3 + np.arange(400) * period) / 0.02) * 0.02              # detector beats, 50 fps
+    junk = np.sort(np.random.default_rng(2).uniform(raw[100], raw[160], 60))   # a break the detector wanders in
+    beats = np.sort(np.concatenate([raw[:100], junk, raw[160:]]))
+    rec = _rec(tmp_path, bpm=124.37, bpm_fitted=124.37, phase=0.3 - 0.015, inlier_ratio=0.8,
+               flags="grid-fit", phase_offset_ms=-15.0)
+    marker = Marker(tmp_path / "Artist - Song.mp3", 0.3 + 300 * period + 0.02, None, "", "serato")
+    result = markers_to_rows([marker], {rec.track_id: rec}, beats_for=lambda r: (beats, beats[::4]))
+    assert result.rows[0]["bpm"] == "124.37"
+    assert float(result.rows[0]["start"]) == pytest.approx(0.3 - 0.015 + 300 * period, abs=1e-6)

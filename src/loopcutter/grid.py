@@ -121,6 +121,16 @@ def local_grid(beats, downbeats, t: float, span_beats: int = LOCAL_SPAN_BEATS,
     return replace(grid, bar_phase=phase, bar_agreement=agreement)
 
 
+def local_inliers(grid: Grid, beats, t: float, span_beats: int = LOCAL_SPAN_BEATS) -> float:
+    """Share of the detected beats within span_beats of time t that sit on `grid`."""
+    beats = np.asarray(beats, dtype=float)
+    near = beats[np.abs(beats - t) <= span_beats * grid.period / 2]
+    if near.size < MIN_BEATS:
+        return 0.0
+    n = np.round((near - grid.phase) / grid.period)
+    return float(np.mean(np.abs(near - (grid.phase + n * grid.period)) < INLIER_S))
+
+
 def attack_phase(mono, sr: int, grid: Grid) -> tuple[float, float]:
     """Where the attack sits against the grid's beats (the strongest onset within 40 ms of
     each beat, strength-weighted median), and the share of beats that agree to within 5 ms."""
