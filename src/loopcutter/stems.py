@@ -8,6 +8,7 @@ before any loop is cut from them. Raw output is cached per track.
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -25,6 +26,7 @@ DEFAULT_MODEL = "htdemucs_6s.yaml"
 STEM_NAMES = ("drums", "bass", "other", "vocals", "guitar", "piano", "instrumental")
 ALIGN_SECONDS = 20.0
 GAIN_TOLERANCE_DB = 1.0
+COMPLETE_MARKER = "complete.json"
 _STEM_IN_NAME = re.compile(r"\((\w+)\)")
 
 Runner = Callable[[Path, Path, str], list[Path]]
@@ -74,16 +76,27 @@ def collect_stems(files) -> dict[str, Path]:
 
 def separate(source, out_dir, engine: str = DEFAULT_ENGINE, model: str = DEFAULT_MODEL,
              runner: Runner | None = None) -> dict[str, Path]:
-    """Raw separator output for one source, cached in out_dir/<source name>/raw."""
+    """Raw separator output for one source, cached in
+    out_dir/<source name>/raw/<engine>-<model>. The cache counts only once a finished
+    run has marked it, and only for the source file it was made from."""
     source = Path(source)
-    raw = Path(out_dir) / source.stem / "raw"
-    raw.mkdir(parents=True, exist_ok=True)
-    cached = collect_stems(sorted(raw.rglob("*.wav")))
+    raw = Path(out_dir) / source.stem / "raw" / f"{engine}-{model}"
+    marker = raw / COMPLETE_MARKER
+    stat = source.stat()
+    stamp = {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+    try:
+        finished = json.loads(marker.read_text()) == stamp
+    except (OSError, ValueError):
+        finished = False
+    cached = collect_stems(sorted(raw.rglob("*.wav"))) if finished else {}
     if cached:
         return cached
+    shutil.rmtree(raw, ignore_errors=True)
+    raw.mkdir(parents=True)
     found = collect_stems((runner or ENGINES[engine])(source, raw, model))
     if not found:
         raise RuntimeError(f"{engine} produced no stems for {source.name}")
+    marker.write_text(json.dumps(stamp))
     return found
 
 

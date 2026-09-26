@@ -11,20 +11,56 @@ def test_collect_reads_both_naming_styles(tmp_path):
     assert set(collect_stems(files)) == {"vocals", "bass", "drums"}
 
 
-def test_separate_runs_once_and_reuses(tmp_path):
-    calls = []
-
+def _runner(calls):
     def runner(source, out_dir, model):
         calls.append(model)
         paths = [out_dir / f"{source.stem}_({n})_{model}.wav" for n in ("Drums", "Bass")]
         for p in paths:
             p.write_bytes(b"")
         return paths
+    return runner
 
+
+def test_separate_runs_once_and_reuses(tmp_path):
+    calls = []
     source = tmp_path / "Song.aiff"; source.write_bytes(b"")
-    first = separate(source, tmp_path / "stems", model="m", runner=runner)
+    first = separate(source, tmp_path / "stems", model="m", runner=_runner(calls))
     assert set(first) == {"drums", "bass"}
-    assert separate(source, tmp_path / "stems", model="m", runner=runner) == first and calls == ["m"]
+    assert separate(source, tmp_path / "stems", model="m", runner=_runner(calls)) == first
+    assert calls == ["m"]
+
+
+def test_separate_caches_per_engine_and_model(tmp_path):
+    calls = []
+    source = tmp_path / "Song.aiff"; source.write_bytes(b"")
+    for model in ("m", "n", "m"):
+        separate(source, tmp_path / "stems", model=model, runner=_runner(calls))
+    separate(source, tmp_path / "stems", engine="demucs", model="m", runner=_runner(calls))
+    assert calls == ["m", "n", "m"]
+
+
+def test_separate_reruns_over_output_it_never_finished(tmp_path):
+    calls = []
+    source = tmp_path / "Song.aiff"; source.write_bytes(b"")
+
+    def crashes(source, out_dir, model):
+        (out_dir / "Song_(Drums)_m.wav").write_bytes(b"")
+        raise RuntimeError("killed")
+
+    with pytest.raises(RuntimeError, match="killed"):
+        separate(source, tmp_path / "stems", model="m", runner=crashes)
+    assert set(separate(source, tmp_path / "stems", model="m", runner=_runner(calls))) == {"drums", "bass"}
+    assert calls == ["m"]
+
+
+def test_separate_reruns_when_the_source_changes(tmp_path):
+    calls = []
+    source = tmp_path / "Song.aiff"; source.write_bytes(b"")
+    separate(source, tmp_path / "stems", model="m", runner=_runner(calls))
+    source.write_bytes(b"new master")
+    separate(source, tmp_path / "stems", model="m", runner=_runner(calls))
+    separate(source, tmp_path / "stems", model="m", runner=_runner(calls))
+    assert calls == ["m", "m"]
 
 
 def test_separate_fails_loudly_when_nothing_comes_out(tmp_path):
