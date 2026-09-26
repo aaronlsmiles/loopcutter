@@ -1,3 +1,4 @@
+import csv
 import shutil
 
 import numpy as np
@@ -8,7 +9,7 @@ from loopcutter.keydetect import detect_key, key_from_keyfinder, key_from_tags
 from loopcutter.keys import parse_key
 from loopcutter.model import TrackRecord
 from loopcutter.naming import bpm_band, library_subdir
-from loopcutter.trackdb import find_record, load_tracks, save_tracks, track_id_for
+from loopcutter.trackdb import FIELDS, find_record, load_tracks, save_tracks, track_id_for
 
 
 def _rec(**kw):
@@ -28,6 +29,51 @@ def test_roundtrip_keeps_types_nones_and_overrides(tmp_path):
 
 def test_missing_file_is_empty(tmp_path):
     assert load_tracks(tmp_path / "none.csv") == {}
+
+
+def _write_rows(path, rows):
+    """rows: list of dicts; unset FIELDS default to "" like an untouched spreadsheet cell."""
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=FIELDS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({name: row.get(name, "") for name in FIELDS})
+
+
+def test_bom_prefixed_file_roundtrips_all_its_rows(tmp_path):
+    """Excel's "CSV UTF-8" prefixes a byte-order mark; it must not blank out track_id."""
+    path = tmp_path / "tracks.csv"
+    rec = _rec(flags="grid-fit;key", override_phase_ms=-234.4)
+    save_tracks(path, {rec.track_id: rec})
+    bom_prefixed = "﻿" + path.read_text(encoding="utf-8")
+    path.write_bytes(bom_prefixed.encode("utf-8"))
+    assert load_tracks(path) == {rec.track_id: rec}
+
+
+def test_empty_track_id_raises_naming_the_row(tmp_path):
+    path = tmp_path / "tracks.csv"
+    _write_rows(path, [{"track_id": "", "source": "s", "master": "m", "sample_rate": "48000",
+                        "duration": "1.0", "bpm": "120", "phase": "0.0", "bar_phase": "0"}])
+    with pytest.raises(ValueError, match="row 2"):
+        load_tracks(path)
+
+
+def test_duplicate_track_id_raises(tmp_path):
+    path = tmp_path / "tracks.csv"
+    row = {"track_id": "A", "source": "s", "master": "m", "sample_rate": "48000",
+           "duration": "1.0", "bpm": "120", "phase": "0.0", "bar_phase": "0"}
+    _write_rows(path, [row, dict(row)])
+    with pytest.raises(ValueError, match="row 3"):
+        load_tracks(path)
+
+
+def test_unparseable_override_raises_naming_row_and_column(tmp_path):
+    path = tmp_path / "tracks.csv"
+    _write_rows(path, [{"track_id": "A", "source": "s", "master": "m", "sample_rate": "48000",
+                        "duration": "1.0", "bpm": "120", "phase": "0.0", "bar_phase": "0",
+                        "override_bpm": "abc"}])
+    with pytest.raises(ValueError, match="row 2.*override_bpm"):
+        load_tracks(path)
 
 
 def test_find_record_by_source_or_master(tmp_path):

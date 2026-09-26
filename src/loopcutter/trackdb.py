@@ -38,10 +38,22 @@ def load_tracks(path) -> dict[str, TrackRecord]:
     path = Path(path)
     if not path.exists():
         return {}
-    with path.open(newline="", encoding="utf-8") as handle:
-        records = [TrackRecord(**{n: _parse(_TYPES[n], row.get(n)) for n in FIELDS})
-                   for row in csv.DictReader(handle)]
-    return {r.track_id: r for r in records}
+    records: dict[str, TrackRecord] = {}
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        for row_number, row in enumerate(csv.DictReader(handle), start=2):
+            values = {}
+            for name in FIELDS:
+                try:
+                    values[name] = _parse(_TYPES[name], row.get(name))
+                except ValueError as exc:
+                    raise ValueError(f"row {row_number}, column {name!r}: {exc}") from None
+            track_id = values["track_id"]
+            if not track_id:
+                raise ValueError(f"row {row_number}: track_id is empty")
+            if track_id in records:
+                raise ValueError(f"row {row_number}: track_id {track_id!r} is a duplicate")
+            records[track_id] = TrackRecord(**values)
+    return records
 
 
 def save_tracks(path, records: dict[str, TrackRecord]) -> None:
