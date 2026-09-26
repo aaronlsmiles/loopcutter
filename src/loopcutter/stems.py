@@ -9,6 +9,7 @@ cut from them. Raw output is cached per track.
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Callable
@@ -71,26 +72,57 @@ def separate(source, out_dir, engine: str = DEFAULT_ENGINE, model: str = DEFAULT
 
 
 def conform_stems(stems: dict[str, Path], master, out_dir) -> dict[str, Path]:
-    """Write each stem as 24-bit AIFF at the master's rate, then prove the stems' sum
-    lines up with the master to the sample."""
-    master_audio, rate = read_audio(master)
+    """Resample each stem to the master's rate and prove the stems' sum lines up with
+    the master to the sample, all in memory; only then swap the set in as
+    out_dir/<stem>.aiff (24-bit). Any failure leaves out_dir with no stems."""
     out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    written: dict[str, Path] = {}
+    partial = out_dir.with_name(out_dir.name + ".partial")
+    shutil.rmtree(partial, ignore_errors=True)
+    try:
+        master_audio, rate = read_audio(master)
+        audio = {name: _at_rate(path, rate) for name, path in sorted(stems.items())}
+        _check_alignment(audio, master_audio, rate, Path(master).name)
+        partial.mkdir(parents=True)
+        for name, x in audio.items():
+            sf.write(str(partial / f"{name}.aiff"), np.clip(x, -1.0, 1.0), rate,
+                     format="AIFF", subtype="PCM_24")
+        _swap_in(partial, out_dir)
+    except Exception:
+        shutil.rmtree(partial, ignore_errors=True)
+        for stale in out_dir.glob("*.aiff"):
+            stale.unlink()
+        raise
+    return {name: out_dir / f"{name}.aiff" for name in audio}
+
+
+def _at_rate(path: Path, rate: int) -> np.ndarray:
+    audio, sr = read_audio(path)
+    return audio if sr == rate else soxr.resample(audio, sr, rate, quality="VHQ")
+
+
+def _check_alignment(audio: dict[str, np.ndarray], master: np.ndarray, rate: int,
+                     label: str) -> None:
     total = None
-    for name, path in sorted(stems.items()):
-        audio, sr = read_audio(path)
-        if sr != rate:
-            audio = soxr.resample(audio, sr, rate, quality="VHQ")
-        dest = out_dir / f"{name}.aiff"
-        sf.write(str(dest), np.clip(audio, -1.0, 1.0), rate, format="AIFF", subtype="PCM_24")
-        written[name] = dest
-        total = audio if total is None else total[: len(audio)] + audio[: len(total)]
-    span = min(len(total), len(master_audio), int(ALIGN_SECONDS * rate))
-    mix, ref = total[:span].mean(axis=1), master_audio[:span].mean(axis=1)
+    for x in audio.values():
+        total = x if total is None else total[: len(x)] + x[: len(total)]
+    span = min(len(total), len(master), int(ALIGN_SECONDS * rate))
+    mix, ref = total[:span].mean(axis=1), master[:span].mean(axis=1)
     corr = np.fft.irfft(np.fft.rfft(mix, 2 * span) * np.conj(np.fft.rfft(ref, 2 * span)))
     lag = int(np.argmax(corr))
     lag = lag - 2 * span if lag > span else lag
     if abs(lag) > 1:
-        raise RuntimeError(f"stems don't line up with {Path(master).name}: {lag} samples out")
-    return written
+        raise RuntimeError(f"stems don't line up with {label}: {lag} samples out")
+
+
+def _swap_in(new: Path, dest: Path) -> None:
+    """Replace dest with new, carrying over what isn't a stem (the separator's raw cache
+    lives in dest when the track id is the master's name)."""
+    old = dest.with_name(dest.name + ".old")
+    shutil.rmtree(old, ignore_errors=True)
+    if dest.exists():
+        dest.rename(old)
+        for child in old.iterdir():
+            if child.suffix != ".aiff":
+                child.rename(new / child.name)
+    new.rename(dest)
+    shutil.rmtree(old, ignore_errors=True)

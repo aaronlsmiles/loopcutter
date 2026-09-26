@@ -55,3 +55,37 @@ def test_conform_resamples_to_the_master_rate_and_checks_alignment(tmp_path):
     with pytest.raises(RuntimeError, match="line up"):
         conform_stems({"bass": tmp_path / "a_late.wav", "other": tmp_path / "b_late.wav"},
                       master, tmp_path / "late")
+
+
+def _master(tmp_path, parts, sr=44100):
+    mix = np.sum(parts, axis=0)
+    master = tmp_path / "master.aiff"
+    sf.write(str(master), np.column_stack([mix, mix]), sr, format="AIFF", subtype="PCM_24")
+    return master
+
+
+def test_conform_leaves_no_usable_stems_when_alignment_fails(tmp_path):
+    a, b = _noise(tmp_path / "a.wav", 44100, 1), _noise(tmp_path / "b.wav", 44100, 2)
+    master, out = _master(tmp_path, [a, b]), tmp_path / "out"
+    conform_stems({"bass": tmp_path / "a.wav", "other": tmp_path / "b.wav"}, master, out)
+    (out / "raw").mkdir()
+    (out / "raw" / "cached.wav").write_bytes(b"")
+    assert sorted(p.name for p in out.glob("*.aiff")) == ["bass.aiff", "other.aiff"]
+    _noise(tmp_path / "a_late.wav", 44100, 1, shift=400)
+    _noise(tmp_path / "b_late.wav", 44100, 2, shift=400)
+    with pytest.raises(RuntimeError, match="line up"):
+        conform_stems({"bass": tmp_path / "a_late.wav", "other": tmp_path / "b_late.wav"}, master, out)
+    assert not list(out.glob("*.aiff")) and not list(tmp_path.glob("out.*"))
+    assert (out / "raw" / "cached.wav").exists()
+
+
+def test_conform_replaces_the_previous_set_and_keeps_the_raw_cache(tmp_path):
+    a, b = _noise(tmp_path / "a.wav", 44100, 1), _noise(tmp_path / "b.wav", 44100, 2)
+    master, out = _master(tmp_path, [a, b]), tmp_path / "out"
+    out.mkdir()
+    (out / "guitar.aiff").write_bytes(b"stale")
+    (out / "raw").mkdir()
+    (out / "raw" / "cached.wav").write_bytes(b"")
+    conform_stems({"bass": tmp_path / "a.wav", "other": tmp_path / "b.wav"}, master, out)
+    assert sorted(p.name for p in out.glob("*.aiff")) == ["bass.aiff", "other.aiff"]
+    assert (out / "raw" / "cached.wav").exists() and not list(tmp_path.glob("out.*"))
