@@ -187,3 +187,10 @@ def test_find_zero_crossing_direction_picks_which_side_wins():
 
     assert _find_zero_crossing(mono, centre, radius=5, direction="backward") == centre - 4
     assert _find_zero_crossing(mono, centre, radius=5, direction="both") == centre + 2
+
+
+def test_plain_manifest_rows_have_no_track_or_snap(click_track, tmp_path):
+    path = tmp_path / "p.csv"
+    path.write_text(f"source,label,bars,bpm,start\n{click_track['path']},x,4,128,5.0\n")
+    spec = load_manifest(path)[0]
+    assert spec.snap == "" and spec.track_id is None

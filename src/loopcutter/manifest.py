@@ -35,13 +35,16 @@ class LoopSpec:
     notes: str = ""
     row_number: int = 0
     extra: dict[str, str] = field(default_factory=dict)
+    track_id: str | None = None
+    snap: str = ""
 
     @property
     def slug(self) -> str:
         parts = [p for p in (self.artist, self.track) if p]
         stub = " - ".join(parts) if parts else self.source.stem
         bars = int(self.bars) if float(self.bars).is_integer() else self.bars
-        return f"{stub} [{self.label}][{bars}bar]"
+        stem = f"[{self.stem}]" if self.stem else ""
+        return f"{stub} [{self.label}][{bars}bar]{stem}"
 
 
 class ManifestError(ValueError):
@@ -139,7 +142,7 @@ def load_manifest(path: str | Path, audio_root: str | Path | None = None) -> lis
 
         known = REQUIRED | START_BY_TIME | START_BY_BAR | {
             "beats_per_bar", "stem", "artist", "track", "key", "notes",
-            "variations",
+            "variations", "track_id", "snap",
         }
 
         for offset, row in enumerate(reader, start=2):
@@ -150,6 +153,15 @@ def load_manifest(path: str | Path, audio_root: str | Path | None = None) -> lis
             if row.get("source", "").startswith("#"):
                 continue
 
+            snap = (row.get("snap") or "").lower()
+            if snap in {"beat", "bar"}:
+                raise ManifestError(f"row {offset}: start not snapped yet - run "
+                                    f"`loopcutter resolve {path}`")
+            if snap:
+                raise ManifestError(f"row {offset}: snap must be beat, bar or empty, got {snap!r}")
+            if row.get("track_id") and not (row.get("bpm") and row.get("source")):
+                raise ManifestError(f"row {offset}: source or bpm missing - run "
+                                    f"`loopcutter resolve {path}` to fill them from tracks.csv")
             _require(row, offset)
             bpm = float(row["bpm"])
             beats_per_bar = int(row.get("beats_per_bar") or 4)
@@ -176,6 +188,8 @@ def load_manifest(path: str | Path, audio_root: str | Path | None = None) -> lis
                         notes=row.get("notes") or "",
                         row_number=offset,
                         extra={k: v for k, v in row.items() if k not in known and v},
+                        track_id=row.get("track_id") or None,
+                        snap=snap,
                     )
                 )
 
