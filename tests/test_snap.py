@@ -1,0 +1,112 @@
+import csv
+
+import numpy as np
+import pytest
+
+from loopcutter.model import Marker, TrackRecord
+from loopcutter.snap import (
+    MANIFEST_FIELDS, SnapError, bars_from_length, markers_to_rows, snap_time, track_grid,
+    write_manifest,
+)
+
+P125 = 60 / 125
+
+
+def _rec(tmp_path, **kw):
+    base = dict(track_id="Artist - Song", source=str(tmp_path / "Artist - Song.mp3"),
+                master=str(tmp_path / "Artist - Song.aiff"), sample_rate=48000, duration=300.0,
+                bpm=125.0, phase=0.1, bar_phase=0, key="8A", inlier_ratio=1.0)
+    base.update(kw)
+    return TrackRecord(**base)
+
+
+def test_snap_moves_a_near_miss_onto_the_beat(tmp_path):
+    result = snap_time(0.1 + 32 * P125 + 0.030, track_grid(_rec(tmp_path)))
+    assert result.snapped == pytest.approx(0.1 + 32 * P125) and result.on_bar
+    assert result.shift_ms == pytest.approx(-30.0, abs=0.01)
+
+
+def test_refusal_names_the_nearby_beats_and_bar(tmp_path):
+    with pytest.raises(SnapError, match="nearest bar"):
+        snap_time(0.1 + 10.3 * P125, track_grid(_rec(tmp_path)))
+
+
+def test_bar_mode_and_off_mode(tmp_path):
+    grid = track_grid(_rec(tmp_path))
+    assert snap_time(0.1 + 9 * P125, grid, mode="bar", max_shift_ms=600).snapped == pytest.approx(0.1 + 8 * P125)
+    assert snap_time(3.21, grid, mode="off").snapped == 3.21
+
+
+def test_your_overrides_move_the_grid(tmp_path):
+    grid = track_grid(_rec(tmp_path, override_phase_ms=P125 * 500))     # half a beat later
+    assert grid.nearest_beat(0.1 + P125 / 2) == pytest.approx(0.1 + P125 / 2)
+
+
+def test_the_grid_uses_the_fitted_tempo(tmp_path):
+    assert track_grid(_rec(tmp_path, bpm=125.0, bpm_fitted=124.995)).bpm == pytest.approx(124.995)
+
+
+def test_bars_from_length_with_tolerance(tmp_path):
+    grid = track_grid(_rec(tmp_path))
+    assert bars_from_length(16 * P125 + 0.012, grid) == 4
+    assert bars_from_length(2 * P125 - 0.01, grid) == 0.5
+    assert bars_from_length(14 * P125, grid) is None                  # 3.5 bars: not a standard length
+
+
+def test_app_offset_is_removed_before_snapping(tmp_path):
+    rec = _rec(tmp_path, app="serato", app_offset_ms=41.0)
+    beat = 0.1 + 64 * P125
+    late = Marker(tmp_path / "Artist - Song.mp3", beat + 0.041 + 0.030, None, "A1", "serato")
+    result = markers_to_rows([late], {rec.track_id: rec})
+    assert float(result.rows[0]["start"]) == pytest.approx(beat, abs=1e-6)   # 71 ms late -> 30 ms after correction
+    flagged = _rec(tmp_path, app="serato", app_offset_ms=41.0, flags="half-beat")
+    assert markers_to_rows([late], {flagged.track_id: flagged}).problems      # no correction -> refused
+
+
+def test_markers_become_resolved_rows(tmp_path):
+    rec = _rec(tmp_path)
+    start = 0.1 + 64 * P125
+    markers = [
+        Marker(tmp_path / "Artist - Song.mp3", start + 0.02, start + 0.02 + 16 * P125, "A1 bass 2,1", "serato"),
+        Marker(tmp_path / "Artist - Song.mp3", start + 0.24, None, "", "serato"),          # half a beat out
+        Marker(tmp_path / "Artist - Song.mp3", start, start + 14 * P125, "odd", "serato"),  # 3.5 bars
+        Marker(tmp_path / "Unknown.mp3", 1.0, None, "", "serato"),
+    ]
+    result = markers_to_rows(markers, {rec.track_id: rec})
+    row = result.rows[0]
+    assert (row["label"], row["bars"], row["stem"], row["variations"], row["snap"]) == ("A1", "4", "bass", "2,1", "")
+    assert row["source"] == rec.master and row["artist"] == "Artist" and row["track"] == "Song"
+    assert float(row["start"]) == pytest.approx(start, abs=1e-6) and row["key"] == "8A" and row["bpm"] == "125"
+    assert len(result.rows) == 1 and len(result.problems) == 3
+    assert result.moves_ms == [pytest.approx(-20.0, abs=0.01)]
+
+
+def test_local_grid_is_used_for_a_track_whose_tempo_moves(tmp_path):
+    first = np.arange(150) * 60 / 120
+    second = first[-1] + np.arange(1, 151) * 60 / 128
+    beats = np.concatenate([first, second])
+    rec = _rec(tmp_path, bpm=124.0, phase=0.0, inlier_ratio=0.5, flags="grid-fit")
+    target = second[40]
+    marker = Marker(tmp_path / "Artist - Song.mp3", target + 0.02, None, "", "serato")
+    result = markers_to_rows([marker], {rec.track_id: rec}, beats_for=lambda r: (beats, beats[::4]))
+    assert float(result.rows[0]["start"]) == pytest.approx(target, abs=0.002)
+    assert result.rows[0]["bpm"] == "128"
+
+
+def test_an_unsure_grid_keeps_rekordbox_marks_on_the_master_and_refuses_the_rest(tmp_path):
+    rec = _rec(tmp_path, flags="phase")
+    odd = 0.1 + 64 * P125 + 0.017
+    kept = Marker(tmp_path / "Artist - Song.aiff", odd, None, "A1", "rekordbox")
+    refused = Marker(tmp_path / "Artist - Song.mp3", odd, None, "A2", "serato")
+    result = markers_to_rows([kept, refused], {rec.track_id: rec})
+    assert [float(r["start"]) for r in result.rows] == [pytest.approx(odd)]
+    assert len(result.problems) == 1 and "confident" in result.problems[0]
+
+
+def test_write_manifest_refuses_to_overwrite(tmp_path):
+    out = tmp_path / "m.csv"
+    write_manifest([{"source": "a", "label": "A1", "bars": "4", "bpm": "125", "start": "1.0"}], out)
+    with open(out) as fh:
+        assert next(csv.reader(fh)) == MANIFEST_FIELDS
+    with pytest.raises(FileExistsError):
+        write_manifest([], out)
