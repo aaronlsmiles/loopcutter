@@ -22,7 +22,7 @@ from pathlib import Path
 
 import soundfile as _sf
 
-from .cut import cut_loop
+from .cut import cut_loop, cut_oneshot
 from .keyreport import load_keys, render, render_histogram, render_sweep
 from .keys import (COMFORT_SEMITONES, MAX_POSSIBLE_SEMITONES, KeyParseError, parse_key,
                    plan_sessions, sweep)
@@ -284,8 +284,8 @@ def _tag(result, spec) -> None:
         key = parse_key(spec.key) if spec.key else None
     except KeyParseError:
         key = None
-    length = f"{spec.bars:g}bar"
-    write_loop_tags(result.output, bpm=spec.bpm, key=key, stem=spec.stem,
+    length = "oneshot" if spec.kind == "oneshot" else f"{spec.bars:g}bar"
+    write_loop_tags(result.output, bpm=spec.bpm or None, key=key, stem=spec.stem,
                     title=f"{spec.track or spec.source.stem} [{spec.label}][{length}]",
                     artist=spec.artist, comment=spec.label)
 
@@ -313,7 +313,7 @@ def _cmd_cut(args) -> int:
     for line in _tiling_warnings(specs):
         print(f"  note: {line}")
     for spec in specs:
-        if spec.bars not in LIVE_INFERS_BARS:
+        if spec.kind == "loop" and spec.bars not in LIVE_INFERS_BARS:
             print(f"  note: {spec.slug}: Live infers tempo only for 1, 2, 4, 8 and 16-bar clips; "
                   f"set this one to {spec.bpm:g} BPM by hand")
     if args.dry_run:
@@ -327,9 +327,15 @@ def _cmd_cut(args) -> int:
         record = tracks.get(spec.track_id) if spec.track_id else None
         out_dir = out_root / library_subdir(spec) if layout == "library" else out_root
         try:
-            result = cut_loop(spec, out_dir=out_dir, fmt=args.format, subtype=args.subtype,
-                              snap_ms=args.snap_ms, fade_ms=args.fade_ms, trim_db=args.trim_db,
-                              filename=build_filename(spec, args.format))
+            if spec.kind == "oneshot":
+                result = cut_oneshot(spec, out_dir=out_dir, fmt=args.format, subtype=args.subtype,
+                                     snap_ms=args.snap_ms, trim_db=args.trim_db,
+                                     filename=build_filename(spec, args.format))
+            else:
+                result = cut_loop(spec, out_dir=out_dir, fmt=args.format, subtype=args.subtype,
+                                  snap_ms=args.snap_ms, fade_ms=args.fade_ms, trim_db=args.trim_db,
+                                  xfade_ms=spec.xfade_ms or args.xfade_ms,
+                                  filename=build_filename(spec, args.format))
         except (FileNotFoundError, ValueError) as exc:
             print(f"  FAIL row {spec.row_number}: {exc}", file=sys.stderr)
             failures += 1
@@ -413,6 +419,8 @@ def build_parser() -> argparse.ArgumentParser:
     cut.add_argument("--snap-ms", type=float, default=2.0)
     cut.add_argument("--fade-ms", type=float, default=0.5)
     cut.add_argument("--trim-db", type=float, default=0.0, help="gain for every loop, e.g. -1.0")
+    cut.add_argument("--xfade-ms", type=float, default=0.0,
+                     help="crossfade the loop's tail into the audio before its start (a row's xfade_ms wins)")
     cut.add_argument("--check-bpm", action="store_true",
                      help="measure the tempo from the audio (automatic for analysed tracks)")
     cut.add_argument("--lenient", action="store_true",

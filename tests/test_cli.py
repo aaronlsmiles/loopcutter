@@ -199,3 +199,16 @@ def test_prep_stores_absolute_source_paths(tmp_path, click_track, monkeypatch):
     assert main(["prep", "../src/Song.wav"]) == 0
     record = load_tracks(ws.tracks_csv)["Song"]
     assert record.source == str((tmp_path / "src" / "Song.wav").resolve())
+
+
+def test_cut_writes_oneshots_and_crossfaded_loops(tmp_path, click_track, monkeypatch, capsys):
+    ws = _ws(tmp_path, click_track, monkeypatch)
+    master = ws.masters / "Artist - Clicks.aiff"
+    (ws.manifests / "s.csv").write_text("source,label,kind,bars,bpm,start,end\n"
+                                        f"{master},V1,oneshot,,,5.0,5.8\n"
+                                        f"{master},A1,loop,4,128,15.0,\n")
+    assert main(["cut", "manifests/s.csv", "--xfade-ms", "10"]) == 0
+    one = ws.loops / "aiff" / "full" / "oneshots" / "Artist - Clicks [V1][oneshot].aiff"
+    assert read_tag(one, "TBPM") is None and read_tag(one, "TIT2").endswith("[V1][oneshot]")
+    assert (ws.loops / "aiff" / "full" / "125-129" / "Artist - Clicks [A1][128][4bar].aiff").exists()
+    assert "Live infers tempo" not in capsys.readouterr().out
