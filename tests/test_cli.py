@@ -138,3 +138,64 @@ def test_prep_warns_when_a_master_was_built_from_another_source(tmp_path, click_
     assert main(["prep", str(tmp_path / "lossless" / "Song.flac")]) == 0
     out = capsys.readouterr().out
     assert "CHANGED Song.aiff" in out and "lossy" in out
+
+
+def _flag(ws, **kw):
+    from dataclasses import replace
+
+    records = load_tracks(ws.tracks_csv)
+    records["Artist - Clicks"] = replace(records["Artist - Clicks"], **kw)
+    save_tracks(ws.tracks_csv, records)
+
+
+def test_cut_measures_the_tempo_of_a_track_whose_tempo_moves(tmp_path, click_track, monkeypatch):
+    ws = _ws(tmp_path, click_track, monkeypatch)
+    _flag(ws, bpm=124.0, bpm_fitted=124.0, inlier_ratio=0.5, flags="grid-fit")   # a whole-track average
+    (ws.manifests / "s.csv").write_text(
+        "source,track_id,label,bars,bpm,start\n"
+        f"{ws.masters / 'Artist - Clicks.aiff'},Artist - Clicks,A1,4,128,15.0\n")          # local tempo 128
+    assert main(["cut", "manifests/s.csv"]) == 0
+
+
+def test_resolve_reports_an_unanalysed_track_and_rows_it_cannot_read(tmp_path, click_track, monkeypatch, capsys):
+    ws = _ws(tmp_path, click_track, monkeypatch)
+    _flag(ws, bpm=0.0, bpm_fitted=0.0)
+    path = ws.manifests / "s.csv"
+    path.write_text("track_id,label,bars,start,snap\nArtist - Clicks,A1,4,15.03,beat \n"
+                    "Artist - Clicks,A2,4,,beat\n")
+    assert main(["resolve", "manifests/s.csv"]) == 1
+    err = capsys.readouterr().err
+    assert "row 2" in err and "scan" in err and "row 3" in err
+
+
+def test_resolve_never_truncates_a_manifest_with_a_stray_comma(tmp_path, click_track, monkeypatch, capsys):
+    ws = _ws(tmp_path, click_track, monkeypatch)
+    path = ws.manifests / "s.csv"
+    text = ("track_id,label,bars,start,snap,notes\nArtist - Clicks,A1,4,15.03,beat,fine\n"
+            "Artist - Clicks,A2,4,15.03,beat,stray, comma\n")
+    path.write_text(text)
+    assert main(["resolve", "manifests/s.csv"]) == 2
+    assert path.read_text() == text and "row 3" in capsys.readouterr().err
+
+
+def test_resolve_strips_snap_and_refuses_an_unsure_phase(tmp_path, click_track, monkeypatch, capsys):
+    ws = _ws(tmp_path, click_track, monkeypatch)
+    path = ws.manifests / "s.csv"
+    path.write_text("track_id,label,bars,start,snap\nArtist - Clicks,A1,4,15.03, Beat \n")
+    assert main(["resolve", "manifests/s.csv"]) == 0
+    assert load_manifest(path)[0].start_seconds == pytest.approx(15.0)
+    _flag(ws, flags="phase", phase_agreement=0.1)
+    path.write_text("track_id,label,bars,start,snap\nArtist - Clicks,A1,4,15.03,beat\n")
+    assert main(["resolve", "manifests/s.csv"]) == 1
+    assert "confident" in capsys.readouterr().err
+
+
+def test_prep_stores_absolute_source_paths(tmp_path, click_track, monkeypatch):
+    ws = init_workspace(tmp_path / "ws")
+    monkeypatch.chdir(ws.root)
+    audio, sr = sf.read(str(click_track["path"]), dtype="float32", always_2d=True)
+    (tmp_path / "src").mkdir()
+    sf.write(str(tmp_path / "src" / "Song.wav"), audio, sr)
+    assert main(["prep", "../src/Song.wav"]) == 0
+    record = load_tracks(ws.tracks_csv)["Song"]
+    assert record.source == str((tmp_path / "src" / "Song.wav").resolve())

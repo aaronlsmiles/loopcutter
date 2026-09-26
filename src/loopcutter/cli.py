@@ -119,11 +119,11 @@ def _cmd_prep(args) -> int:
             print(f"  {result.master.name}  {result.source_rate} -> {result.rate} Hz{clip}")
         track_id = track_id_for(result.master)
         if track_id not in records:
-            records[track_id] = TrackRecord(track_id=track_id, source=str(source),
+            records[track_id] = TrackRecord(track_id=track_id, source=str(Path(source).resolve()),
                                             master=str(result.master), sample_rate=result.rate,
                                             duration=result.frames / result.rate,
                                             bpm=0.0, phase=0.0, bar_phase=0)
-        elif Path(records[track_id].source) != Path(source):
+        elif Path(records[track_id].source).resolve() != Path(source).resolve():
             print(f"  CHANGED {result.master.name}: built from {records[track_id].source}; "
                   "delete the master and its tracks.csv row to rebuild it from this source")
     save_tracks(ws.tracks_csv, records)
@@ -208,14 +208,22 @@ def _cmd_import(args) -> int:
 
 
 def _cmd_resolve(args) -> int:
-    from .snap import SnapError, snap_time, track_grid
+    from .snap import SnapError, grid_at, snap_time
 
     ws = _workspace_or_exit()
     tracks = load_tracks(ws.tracks_csv)
+    beats_for = _beats_for(ws)
     path = Path(args.manifest)
-    with path.open(newline="", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle)
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle, restkey="_extra", restval="")
         fields, rows = list(reader.fieldnames or []), list(reader)
+    ragged = [n for n, row in enumerate(rows, start=2) if "_extra" in row]
+    if ragged:
+        for number in ragged:
+            print(f"  FAIL row {number}: more cells than the header - quote any value "
+                  "that contains a comma", file=sys.stderr)
+        print(f"{path} left unchanged", file=sys.stderr)
+        return 2
     for column in ("source", "bpm", "key", "snap", "notes"):
         if column not in fields:
             fields.append(column)
@@ -223,7 +231,7 @@ def _cmd_resolve(args) -> int:
     failures = changed = 0
     for number, row in enumerate(rows, start=2):
         track_id = row.get("track_id")
-        mode = (row.get("snap") or "").lower()
+        mode = (row.get("snap") or "").strip().lower()
         if not track_id:
             if mode:
                 print(f"  FAIL row {number}: snap needs a track_id", file=sys.stderr)
@@ -234,30 +242,37 @@ def _cmd_resolve(args) -> int:
             print(f"  FAIL row {number}: {track_id!r} is not in tracks.csv", file=sys.stderr)
             failures += 1
             continue
+        try:
+            if mode not in {"", "beat", "bar"}:
+                raise ValueError("snap must be beat, bar or empty")
+            if mode and not row.get("start"):
+                raise ValueError("snap needs a start")
+            start = parse_position(row["start"]) if row.get("start") else 0.0
+            grid, bpm = grid_at(record, start, beats_for)
+            if mode and "phase" in record.flags.split(";") and record.override_phase_ms is None:
+                raise ValueError("this track's grid phase isn't confident - set override_phase_ms "
+                                 "in tracks.csv, or mark it in rekordbox and import")
+            moved = snap_time(start, grid, mode, limit) if mode else None
+        except (SnapError, ValueError) as exc:
+            print(f"  FAIL row {number}: {exc}", file=sys.stderr)
+            failures += 1
+            continue
         row["source"] = row.get("source") or record.master
-        row["bpm"] = row.get("bpm") or f"{record.override_bpm or record.bpm:g}"
+        row["bpm"] = row.get("bpm") or f"{bpm:g}"
         row["key"] = row.get("key") or record.key
-        if mode in {"beat", "bar"}:
-            try:
-                moved = snap_time(parse_position(row["start"]), track_grid(record), mode, limit)
-            except SnapError as exc:
-                print(f"  FAIL row {number}: {exc}", file=sys.stderr)
-                failures += 1
-                continue
+        if moved is not None:
             row["start"], row["snap"] = f"{moved.snapped:.6f}", ""
             row["notes"] = (row.get("notes", "") + f" resolved {moved.shift_ms:+.1f} ms").strip()
             print(f"  row {number}: start moved {moved.shift_ms:+.1f} ms onto the {mode}")
-        elif mode:
-            print(f"  FAIL row {number}: snap must be beat, bar or empty", file=sys.stderr)
-            failures += 1
-            continue
         changed += 1
     ws.reports.mkdir(parents=True, exist_ok=True)
     shutil.copy2(path, ws.reports / f"{path.stem}.{_stamp()}.bak.csv")
-    with path.open("w", newline="", encoding="utf-8") as handle:
+    temp = path.with_suffix(".partial.csv")
+    with temp.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
+    temp.replace(path)
     print(f"{changed} row(s) resolved in {path}; backup in {ws.reports}")
     return 1 if failures else 0
 
@@ -319,7 +334,9 @@ def _cmd_cut(args) -> int:
             print(f"  FAIL row {spec.row_number}: {exc}", file=sys.stderr)
             failures += 1
             continue
-        reference = (record.override_bpm or record.bpm_fitted or record.bpm) if record else None
+        # A track whose tempo moves has no single tempo to check against; measure the audio.
+        steady = record is not None and ("grid-fit" not in record.flags.split(";") or record.override_bpm)
+        reference = (record.override_bpm or record.bpm_fitted or record.bpm) if steady else None
         report = verify_cut(result, check_bpm=args.check_bpm or record is not None,
                             reference_bpm=reference)
         if args.lenient:
