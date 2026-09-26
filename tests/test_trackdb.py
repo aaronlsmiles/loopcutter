@@ -1,7 +1,10 @@
+import shutil
+
 import numpy as np
+import pytest
 import soundfile as sf
 
-from loopcutter.keydetect import detect_key, key_from_tags
+from loopcutter.keydetect import detect_key, key_from_keyfinder, key_from_tags
 from loopcutter.keys import parse_key
 from loopcutter.model import TrackRecord
 from loopcutter.naming import bpm_band, library_subdir
@@ -72,3 +75,17 @@ def test_detect_key_records_disagreement(tmp_path):
     result = detect_key(path, keyfinder=lambda p: parse_key("11A"))
     assert result.key == parse_key("Em") and result.alternative == parse_key("11A") and result.disagrees
     assert detect_key(path, keyfinder=lambda p: parse_key("9A")).alternative is None
+
+
+@pytest.mark.skipif(shutil.which("keyfinder-cli") is None, reason="needs keyfinder-cli")
+def test_key_from_keyfinder_reads_24bit_aiff(tmp_path):
+    """keyfinder-cli can't resample 24-bit/float PCM itself; we must downsample to 16-bit first."""
+    sr, seconds = 48000, 3
+    t = np.arange(int(sr * seconds)) / sr
+    a_minor = 0.2 * (np.sin(2 * np.pi * 220.0 * t)          # A3
+                      + np.sin(2 * np.pi * 261.63 * t)      # C4
+                      + np.sin(2 * np.pi * 329.63 * t))     # E4
+    path = tmp_path / "chord.aiff"
+    sf.write(str(path), np.column_stack([a_minor, a_minor]).astype("float32"), sr,
+             format="AIFF", subtype="PCM_24")
+    assert key_from_keyfinder(path) == parse_key("8A")
