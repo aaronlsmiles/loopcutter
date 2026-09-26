@@ -33,25 +33,29 @@ class CutResult:
     length_samples: int
     snap_offset_samples: int
     peak: float
+    start_sample: int
+    source_peak: float
+    trim_db: float = 0.0
+    timing_source: Path | None = None     # the full mix, when this loop was cut from a stem
 
 
-def _find_zero_crossing(audio: np.ndarray, centre: int, radius: int) -> int:
+def _find_zero_crossing(audio: np.ndarray, centre: int, radius: int,
+                        direction: str = "both") -> int:
     """Nearest sample to `centre` where the summed waveform crosses zero.
 
-    Searches outward so the closest candidate wins. Returns `centre` unchanged
-    if nothing is found inside the radius.
+    `direction="backward"` only looks earlier. Returns `centre` unchanged if
+    nothing is found inside the radius.
     """
     if radius <= 0:
         return centre
-
     mono = audio.mean(axis=1) if audio.ndim > 1 else audio
     lo = max(1, centre - radius)
     hi = min(len(mono) - 1, centre + radius)
     if lo >= hi:
         return centre
-
     for offset in range(0, hi - lo + 1):
-        for candidate in (centre + offset, centre - offset):
+        candidates = (centre - offset,) if direction == "backward" else (centre + offset, centre - offset)
+        for candidate in candidates:
             if lo <= candidate <= hi:
                 if mono[candidate - 1] <= 0.0 <= mono[candidate]:
                     return candidate
@@ -80,6 +84,7 @@ def cut_loop(
     subtype: str = "PCM_24",
     snap_ms: float = DEFAULT_SNAP_MS,
     fade_ms: float = DEFAULT_FADE_MS,
+    trim_db: float = 0.0,
     filename: str | None = None,
 ) -> CutResult:
     out_dir = Path(out_dir)
@@ -108,7 +113,7 @@ def cut_loop(
     )
 
     centre = window.start_sample - read_start
-    snapped = _find_zero_crossing(block, centre, snap_radius)
+    snapped = _find_zero_crossing(block, centre, snap_radius, direction="backward")
     offset = snapped - centre
 
     if snapped + window.length_samples > len(block):
@@ -122,19 +127,18 @@ def cut_loop(
         )
 
     audio = block[snapped : snapped + window.length_samples]
+    source_peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
     fade_samples = int(round(fade_ms / 1000.0 * info.samplerate))
     audio = _apply_edge_fades(audio, fade_samples)
+    if trim_db:
+        audio = np.clip(audio * 10.0 ** (trim_db / 20.0), -1.0, 1.0)
 
-    name = filename or f"{spec.slug}.{fmt}"
-    destination = out_dir / name
-    sf.write(str(destination), audio, info.samplerate,
-             format=fmt.upper(), subtype=subtype)
+    destination = out_dir / (filename or f"{spec.slug}.{fmt}")
+    sf.write(str(destination), audio, info.samplerate, format=fmt.upper(), subtype=subtype)
 
     return CutResult(
-        spec=spec,
-        output=destination,
-        sample_rate=info.samplerate,
-        length_samples=len(audio),
-        snap_offset_samples=offset,
+        spec=spec, output=destination, sample_rate=info.samplerate,
+        length_samples=len(audio), snap_offset_samples=offset,
         peak=float(np.max(np.abs(audio))) if len(audio) else 0.0,
+        start_sample=read_start + snapped, source_peak=source_peak, trim_db=trim_db,
     )

@@ -26,7 +26,7 @@ def test_cut_and_verify_roundtrip(click_track, tmp_path):
             "label": "A1",
             "bars": "4",
             "bpm": str(click_track["bpm"]),
-            "start": "5.0",
+            "start": "5.15625",          # beat 11 at 128 BPM; loops must start on a beat
             "artist": "Test",
             "track": "Clicks",
         }],
