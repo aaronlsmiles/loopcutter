@@ -105,3 +105,25 @@ def test_compare_grids_reads_a_grid_stored_in_whole_milliseconds():
     assert report["app_offset_ms"] == pytest.approx(41.0, abs=0.5)
     gappy = np.delete(app, np.arange(100, 140))
     assert compare_grids(grid, gappy)["app_bpm"] == pytest.approx(128.0, abs=0.005)
+
+
+P125 = 60 / 125
+
+
+def test_fit_survives_a_section_the_detector_tracks_in_triplets():
+    beats = 1.0 + np.arange(1000) * P125
+    triplets = beats[400] + np.arange(60) * (2 * P125 / 3)      # 40 beats followed at two thirds of a beat
+    grid = fit_grid(_quantised(np.sort(np.concatenate([beats[:400], triplets, beats[440:]]))))
+    assert grid.bpm == pytest.approx(125.0, abs=0.01)
+    assert grid.inlier_ratio > 0.9
+
+
+def test_fit_survives_swing_and_dropouts():
+    rng = np.random.default_rng(0)
+    beats = 1.0 + np.arange(700) * 60 / 140
+    kept = beats[rng.random(700) > 0.15]
+    swung = beats[rng.random(700) < 0.3]
+    detections = np.concatenate([kept, swung + rng.uniform(0.08, 0.2, swung.size)])
+    grid = fit_grid(_quantised(np.sort(detections)))
+    assert grid.bpm == pytest.approx(140.0, abs=0.01)
+    assert grid.inlier_ratio > 0.7

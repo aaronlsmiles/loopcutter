@@ -7,7 +7,9 @@ clips the attack on every wrap.
 beat_this reports beats on a 50 fps frame grid, so single intervals are
 quantised to 20 ms. The first estimate of the period therefore comes from a
 line fitted through the longest unbroken run of beats, not from the median
-interval.
+interval. That run can still hide a stretch the detector followed in triplets
+or swing, so the estimate is then refined against every beat at once: the
+period, within 5%, at which the beats line up best.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ PHASE_WINDOW_S = 0.040
 MIN_PHASE_AGREEMENT = 0.35      # 10 of 11 calibration tracks agreed at 0.38-0.76
 ONSET_LEAD_S = 0.002
 LOCAL_SPAN_BEATS = 64
+PERIOD_SEARCH = 0.05
 
 Detector = Callable[[np.ndarray, int], tuple[np.ndarray, np.ndarray]]
 
@@ -55,13 +58,32 @@ def _initial_period(beats: np.ndarray) -> float:
     return float(slope)
 
 
+def _coherence(beats: np.ndarray, periods: np.ndarray) -> np.ndarray:
+    """How well the beats line up on each candidate period (1 = every beat on the grid)."""
+    t = beats - beats[0]
+    blocks = np.array_split(periods, max(1, periods.size // 256))     # bounded memory on long files
+    return np.concatenate([np.abs(np.exp(2j * np.pi * t[None, :] / b[:, None]).mean(axis=1))
+                           for b in blocks])
+
+
+def _refine_period(beats: np.ndarray, rough: float) -> tuple[float, float]:
+    """The period within PERIOD_SEARCH of `rough` at which the most beats line up, and
+    the time of one beat on it. Every beat votes, so quantisation, stray detections and
+    gaps average out; the narrow search can't land on half or double time."""
+    step = 0.2 * rough / (beats[-1] - beats[0])                  # a fifth of the peak's width
+    coarse = rough * (1 + np.arange(-PERIOD_SEARCH, PERIOD_SEARCH + step, step))
+    best = coarse[np.argmax(_coherence(beats, coarse))]
+    fine = best + np.linspace(-1, 1, 41) * step * rough
+    period = float(fine[np.argmax(_coherence(beats, fine))])
+    angle = np.angle(np.mean(np.exp(2j * np.pi * (beats - beats[0]) / period)))
+    return period, float(beats[0] + angle / (2 * np.pi) * period)
+
+
 def fit_grid(beats, beats_per_bar: int = 4) -> Grid:
     beats = np.sort(np.asarray(beats, dtype=float))
     if beats.size < MIN_BEATS:
         raise GridError(f"only {beats.size} beats detected; a grid needs {MIN_BEATS}")
-    period = _initial_period(beats)
-    index = np.round((beats - beats[0]) / period)
-    slope, intercept = np.polyfit(index, beats, 1)
+    slope, intercept = _refine_period(beats, _initial_period(beats))
     keep = np.ones(beats.size, dtype=bool)
     for _ in range(4):
         n = np.round((beats - intercept) / slope)
