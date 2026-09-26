@@ -1,0 +1,4 @@
+source,label,artist,track,bars,bpm,start,downbeat,start_bar,variations,stem,key,notes
+audio/example-track.aiff,A1,Example Artist,Example Track,4,128,1:04.000,,,"2,1,0.5",,Am,main groove plus roll variations
+audio/example-track.aiff,A2,Example Artist,Example Track,2,128,,12.000,9,,bass,Am,bass only from bar 9
+audio/example-track.aiff,A3,Example Artist,Example Track,1,128,2:11.500,,,,drums,,one-bar drum fill
