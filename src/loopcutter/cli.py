@@ -394,7 +394,9 @@ def _cmd_cut(args) -> int:
         result.timing_source = timing_source
         # A track whose tempo moves has no single tempo to check against; measure the audio.
         steady = record is not None and ("grid-fit" not in record.flags.split(";") or record.override_bpm)
-        reference = (record.override_bpm or record.bpm_fitted or record.bpm) if steady else None
+        # The tempo scan proposed, which import and resolve write: machine-made tracks are rounded
+        # to a whole BPM when the fit is within 0.01, and the check holds rows to that proposal.
+        reference = (record.override_bpm or record.bpm or record.bpm_fitted) if steady else None
         report = verify_cut(result, check_bpm=args.check_bpm or record is not None,
                             reference_bpm=reference)
         if record is not None and not steady and spec.kind == "loop":

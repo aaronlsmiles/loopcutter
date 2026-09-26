@@ -296,3 +296,21 @@ def test_cut_refuses_a_double_time_tempo_on_a_moving_tempo_track(tmp_path, click
         f"{ws.masters / 'Artist - Clicks.aiff'},Artist - Clicks,A1,4,256,15.0\n")
     assert main(["cut", "manifests/s.csv"]) == 1
     assert "double" in capsys.readouterr().err
+
+
+def test_a_long_loop_at_the_analysed_whole_tempo_passes_the_tempo_check(tmp_path, monkeypatch):
+    ws = init_workspace(tmp_path / "ws")
+    sr, n = 44100, 44100 * 70
+    audio = np.zeros(n)
+    for beat in range(int(70 * 128 / 60)):
+        s = int(round(beat * sr * 60 / 128)); e = min(n, s + 400)
+        audio[s:e] += 0.6 * np.linspace(1, 0, e - s) * np.sin(2 * np.pi * 1000 * np.arange(e - s) / sr)
+    master = ws.masters / "Artist - Long.aiff"
+    sf.write(str(master), np.column_stack([audio, audio]).astype("float32"), sr, format="AIFF", subtype="PCM_24")
+    save_tracks(ws.tracks_csv, {"Artist - Long": TrackRecord(
+        track_id="Artist - Long", source=str(master), master=str(master), sample_rate=sr, duration=70.0,
+        bpm=128.0, bpm_fitted=128.009, phase=0.0, bar_phase=0, inlier_ratio=1.0, bar_agreement=1.0,
+        phase_agreement=1.0)})                                     # scan rounded 128.009 to 128
+    monkeypatch.chdir(ws.root)
+    (ws.manifests / "s.csv").write_text(f"source,track_id,label,bars,bpm,start\n{master},Artist - Long,A1,16,128,15.0\n")
+    assert main(["cut", "manifests/s.csv"]) == 0

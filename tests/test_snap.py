@@ -200,3 +200,15 @@ def test_a_stretch_the_detector_hears_in_eighth_notes_keeps_the_track_tempo(tmp_
     marker = Marker(tmp_path / "Artist - Song.mp3", 0.3 + 300 * period + 0.01, None, "", "serato")
     result = markers_to_rows([marker], {rec.track_id: rec}, beats_for=lambda r: (beats, beats[::4]))
     assert result.rows[0]["bpm"] == "126"
+
+
+def test_a_double_time_stretch_where_the_whole_grid_does_not_fit_is_refused(tmp_path):
+    first = np.arange(150) * 60 / 120
+    second = first[-1] + np.arange(1, 151) * 60 / 128
+    target = second[70]
+    eighths = target + (np.arange(-30, 30) + 0.5) * 60 / 128
+    beats = np.sort(np.concatenate([first, second, eighths]))
+    rec = _rec(tmp_path, bpm=124.0, bpm_fitted=124.0, phase=0.0, inlier_ratio=0.5, flags="grid-fit")
+    marker = Marker(tmp_path / "Artist - Song.mp3", target + 0.01, None, "", "serato")
+    result = markers_to_rows([marker], {rec.track_id: rec}, beats_for=lambda r: (beats, beats[::4]))
+    assert not result.rows and "double time" in result.problems[0]

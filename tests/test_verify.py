@@ -97,3 +97,27 @@ def test_trim_lowers_the_peak_and_a_boost_that_clips_fails(tmp_path):
 def test_zero_crossing_search_never_moves_the_start_later(click_track, tmp_path):
     result = cut_loop(_spec(tmp_path, click_track["path"], start="15.003"), tmp_path / "o", fmt="wav")
     assert result.snap_offset_samples <= 0
+
+
+def _names(report):
+    return [c.name for c in report.failures]
+
+
+def test_sample_count_and_sample_rate_catch_a_damaged_file(click_track, tmp_path):
+    result = cut_loop(_spec(tmp_path, click_track["path"]), tmp_path / "o", fmt="wav")
+    audio, sr = sf.read(str(result.output), dtype="float32")
+    sf.write(str(result.output), audio[:-10], sr)                           # truncated
+    assert "sample_count" in _names(verify_cut(result))
+    sf.write(str(result.output), audio, 48000)                              # wrong rate
+    assert "sample_rate" in _names(verify_cut(result))
+
+
+def test_not_silent_and_dc_offset_can_fail(tmp_path):
+    sr = 44100
+    silent = tmp_path / "silent.wav"
+    sf.write(str(silent), np.zeros((sr * 30, 2), dtype="float32"), sr)
+    assert "not_silent" in _names(verify_cut(cut_loop(_spec(tmp_path, silent), tmp_path / "a", fmt="wav")))
+    offset = tmp_path / "dc.wav"
+    audio, _ = sf.read(str(_clicks(tmp_path / "c.wav", peak=0.5)), dtype="float32")
+    sf.write(str(offset), audio + 0.05, sr, subtype="FLOAT")
+    assert "dc_offset" in _names(verify_cut(cut_loop(_spec(tmp_path, offset), tmp_path / "b", fmt="wav")))
