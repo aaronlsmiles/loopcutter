@@ -307,7 +307,10 @@ def _cmd_stems(args) -> int:
             print(f"  FAIL {track_id}: {exc}", file=sys.stderr)
             failures += 1
             continue
-        print(f"  {track_id}: " + ", ".join(sorted(stems)))
+        clipped = sum(getattr(stems, "clipped", {}).values())
+        level = f"{getattr(stems, 'gain_db', 0.0):+.2f} dB against the master"
+        print(f"  {track_id}: " + ", ".join(sorted(stems)) + f" ({level}"
+              + (f", {clipped} sample(s) clipped" if clipped else "") + ")")
     return 1 if failures else 0
 
 

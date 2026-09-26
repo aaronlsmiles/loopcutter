@@ -223,9 +223,12 @@ def test_stems_command_separates_and_conforms_each_track(tmp_path, click_track, 
     _ws(tmp_path, click_track, monkeypatch)
     calls = []
     monkeypatch.setattr(stems, "separate", lambda src, out, engine, model: calls.append((engine, model)) or {"bass": src})
-    monkeypatch.setattr(stems, "conform_stems", lambda raw, master, out: {"bass": out / "bass.aiff"})
+    monkeypatch.setattr(stems, "conform_stems",
+                        lambda raw, master, out: stems.ConformedStems({"bass": out / "bass.aiff"}, -0.12, {"bass": 3}))
     assert main(["stems", "Artist - Clicks"]) == 0
-    assert calls == [("audio-separator", "htdemucs_6s.yaml")] and "bass" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert calls == [("audio-separator", "htdemucs_6s.yaml")] and "bass" in out
+    assert "-0.12 dB" in out and "3 sample(s) clipped" in out
     assert main(["stems", "Unknown"]) == 1
 
 
