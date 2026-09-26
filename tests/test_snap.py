@@ -189,3 +189,14 @@ def test_junk_around_a_mark_does_not_trade_the_whole_grid_for_a_worse_local_one(
     result = markers_to_rows([marker], {rec.track_id: rec}, beats_for=lambda r: (beats, beats[::4]))
     assert result.rows[0]["bpm"] == "124.37"
     assert float(result.rows[0]["start"]) == pytest.approx(0.3 - 0.015 + 300 * period, abs=1e-6)
+
+
+def test_a_stretch_the_detector_hears_in_eighth_notes_keeps_the_track_tempo(tmp_path):
+    period = 60 / 126
+    raw = np.round((0.3 + np.arange(400) * period) / 0.02) * 0.02
+    eighths = np.round((0.3 + (np.arange(260, 340) + 0.5) * period) / 0.02) * 0.02
+    beats = np.sort(np.concatenate([raw, eighths]))
+    rec = _rec(tmp_path, bpm=126.0, bpm_fitted=126.0, phase=0.3, inlier_ratio=0.8, flags="grid-fit")
+    marker = Marker(tmp_path / "Artist - Song.mp3", 0.3 + 300 * period + 0.01, None, "", "serato")
+    result = markers_to_rows([marker], {rec.track_id: rec}, beats_for=lambda r: (beats, beats[::4]))
+    assert result.rows[0]["bpm"] == "126"

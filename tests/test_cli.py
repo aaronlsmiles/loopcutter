@@ -283,3 +283,13 @@ def test_resolve_refuses_a_downbeat_row_on_a_moving_tempo_and_leaves_complete_ro
     master = ws.masters / "Artist - Clicks.aiff"
     path.write_text(f"source,track_id,label,bars,bpm,start,key\n{master},Artist - Clicks,A1,4,128,15.0,8A\n")
     assert main(["resolve", "manifests/s.csv"]) == 0                      # no beat cache needed for a done row
+
+
+def test_cut_refuses_a_double_time_tempo_on_a_moving_tempo_track(tmp_path, click_track, monkeypatch, capsys):
+    ws = _ws(tmp_path, click_track, monkeypatch)
+    _flag(ws, inlier_ratio=0.5, flags="grid-fit")
+    (ws.manifests / "s.csv").write_text(
+        "source,track_id,label,bars,bpm,start\n"
+        f"{ws.masters / 'Artist - Clicks.aiff'},Artist - Clicks,A1,4,256,15.0\n")
+    assert main(["cut", "manifests/s.csv"]) == 1
+    assert "double" in capsys.readouterr().err

@@ -394,6 +394,14 @@ def _cmd_cut(args) -> int:
         reference = (record.override_bpm or record.bpm_fitted or record.bpm) if steady else None
         report = verify_cut(result, check_bpm=args.check_bpm or record is not None,
                             reference_bpm=reference)
+        if record is not None and not steady and spec.kind == "loop":
+            from .snap import same_tempo
+
+            track_bpm = record.bpm_fitted or record.bpm
+            if track_bpm and not same_tempo(spec.bpm, track_bpm):
+                report.checks.append(Check("bpm_match", False,
+                                           f"declared {spec.bpm:g}, the track runs at {track_bpm:.2f}: "
+                                           "a half- or double-time reading of the beats"))
         if args.lenient:
             for check in report.checks:
                 if check.name == "beat_alignment" and not check.passed:

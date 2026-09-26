@@ -24,6 +24,7 @@ BAR_TOLERANCE = 0.03
 FILE_START_SLACK_S = 0.005
 LOCAL_FIT = 0.9                 # the share of nearby beats that must sit on the whole-track grid
 LOCAL_MARGIN = 0.1              # how much better a local grid must fit to be used instead
+TEMPO_RANGE = (0.8, 1.25)       # a local tempo outside this share of the track's is a half- or double-time misreading
 MANIFEST_FIELDS = ["source", "track_id", "label", "artist", "track", "bars", "bpm", "start",
                    "snap", "variations", "stem", "key", "notes"]
 
@@ -46,6 +47,12 @@ def track_grid(record: TrackRecord) -> Grid:
                 beats_per_bar=record.beats_per_bar, inlier_ratio=record.inlier_ratio,
                 bar_agreement=record.bar_agreement, phase_agreement=record.phase_agreement)
     return grid.shifted(record.override_phase_ms / 1000) if record.override_phase_ms else grid
+
+
+def same_tempo(bpm: float, track_bpm: float) -> bool:
+    """Whether a local tempo is plausibly the track's own, not a half- or double-time reading."""
+    lo, hi = TEMPO_RANGE
+    return lo <= bpm / track_bpm <= hi
 
 
 def grid_at(record: TrackRecord, t: float,
@@ -78,6 +85,8 @@ def grid_at(record: TrackRecord, t: float,
         if whole_fit > 0:
             return whole, record.bpm
         raise SnapError(str(exc)) from None
+    if not same_tempo(grid.bpm, record.bpm_fitted or record.bpm):
+        return whole, record.bpm         # the detector followed eighths or half-notes here
     if grid.inlier_ratio < whole_fit + LOCAL_MARGIN:
         # Stray detections around the mark, not a tempo change: a grid fitted to them is
         # no better, and its tempo is worse.
