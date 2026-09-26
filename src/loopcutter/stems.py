@@ -26,6 +26,7 @@ DEFAULT_MODEL = "htdemucs_6s.yaml"
 STEM_NAMES = ("drums", "bass", "other", "vocals", "guitar", "piano", "instrumental")
 ALIGN_SECONDS = 20.0
 GAIN_TOLERANCE_DB = 1.0
+MIN_STEM_SHARE = 0.01  # a stem under -20 dB of the master is too faint to align on its own
 COMPLETE_MARKER = "complete.json"
 _STEM_IN_NAME = re.compile(r"\((\w+)\)")
 
@@ -132,21 +133,29 @@ def _at_rate(path: Path, rate: int) -> np.ndarray:
 
 
 def _prove(audio: dict[str, np.ndarray], master: np.ndarray, rate: int, label: str) -> float:
-    """Raise unless the stems' sum lines up with the master and matches its level;
-    return that level in dB."""
+    """Raise unless the stems' sum, and each stem loud enough to judge, line up with the
+    master over its loudest stretch, and the sum matches its level; return that level
+    in dB."""
     total = None
     for x in audio.values():
         total = x if total is None else total[: len(x)] + x[: len(total)]
-    span = min(len(total), len(master), int(ALIGN_SECONDS * rate))
-    mix, ref = total[:span].mean(axis=1), master[:span].mean(axis=1)
+    length = min(len(total), len(master))
+    span = min(length, int(ALIGN_SECONDS * rate))
+    window = _loudest(master[:length].mean(axis=1), span, hop=max(1, rate // 10))
+    ref = master[window].mean(axis=1)
     energy = float(np.dot(ref, ref))
     if energy == 0.0:
-        raise RuntimeError(f"{label} is silent where the stems are checked")
-    corr = np.fft.irfft(np.fft.rfft(mix, 2 * span) * np.conj(np.fft.rfft(ref, 2 * span)))
-    lag = int(np.argmax(corr))
-    lag = lag - 2 * span if lag > span else lag
+        raise RuntimeError(f"{label} is silent")
+    lag, corr = _lag(total[window].mean(axis=1), ref)
     if abs(lag) > 1:
         raise RuntimeError(f"stems don't line up with {label}: {lag} samples out")
+    for name, x in audio.items():
+        part = x[window].mean(axis=1)
+        if np.dot(part, part) < MIN_STEM_SHARE * energy:
+            continue
+        stem_lag, _ = _lag(part, ref)
+        if abs(stem_lag) > 1:
+            raise RuntimeError(f"{name} doesn't line up with {label}: {stem_lag} samples out")
     # least squares: the k that best fits mix = k * master at the aligned lag
     gain = corr[lag] / energy
     gain_db = 20 * np.log10(gain) if gain > 0 else float("-inf")
@@ -154,6 +163,22 @@ def _prove(audio: dict[str, np.ndarray], master: np.ndarray, rate: int, label: s
         raise RuntimeError(f"the stems' level doesn't match the master: {gain_db:+.1f} dB"
                            " - was the separator normalising?")
     return float(gain_db)
+
+
+def _loudest(mono: np.ndarray, span: int, hop: int) -> slice:
+    """The loudest span samples of mono, found to within hop samples."""
+    blocks = np.add.reduceat(np.square(mono), np.arange(0, len(mono), hop), dtype=np.float64)
+    sums = np.convolve(blocks, np.ones(max(1, span // hop)), "valid")
+    start = min(int(np.argmax(sums)) * hop, len(mono) - span)
+    return slice(start, start + span)
+
+
+def _lag(x: np.ndarray, ref: np.ndarray) -> tuple[int, np.ndarray]:
+    """Samples by which x trails ref, with the cross-correlation it was read from."""
+    n = 2 * len(ref)
+    corr = np.fft.irfft(np.fft.rfft(x, n) * np.conj(np.fft.rfft(ref, n)), n)
+    lag = int(np.argmax(corr))
+    return (lag - n if lag > len(ref) else lag), corr
 
 
 def _swap_in(new: Path, dest: Path) -> None:

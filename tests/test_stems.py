@@ -127,6 +127,29 @@ def test_conform_replaces_the_previous_set_and_keeps_the_raw_cache(tmp_path):
     assert (out / "raw" / "cached.wav").exists() and not list(tmp_path.glob("out.*"))
 
 
+def test_conform_catches_one_stem_out_among_aligned_ones(tmp_path):
+    parts = [_noise(tmp_path / f"{n}.wav", 44100, seed) for seed, n in enumerate("abc")]
+    master = _master(tmp_path, parts)
+    _noise(tmp_path / "b_late.wav", 44100, 1, shift=400)
+    with pytest.raises(RuntimeError, match="bass doesn't line up with master.aiff: 400 samples"):
+        conform_stems({"drums": tmp_path / "a.wav", "bass": tmp_path / "b_late.wav",
+                       "other": tmp_path / "c.wav"}, master, tmp_path / "out")
+
+
+def test_conform_checks_the_loudest_stretch_not_a_silent_intro(tmp_path):
+    sr, rng = 8000, np.random.default_rng(3)
+    intro = np.zeros(25 * sr, dtype="float32")
+    a, b = (np.concatenate([intro, rng.normal(0.0, 0.1, 10 * sr).astype("float32")]) for _ in "ab")
+    for name, x in (("a", a), ("b", b), ("a_late", np.roll(a, 400)), ("b_late", np.roll(b, 400))):
+        sf.write(str(tmp_path / f"{name}.wav"), np.column_stack([x, x]), sr, subtype="FLOAT")
+    master = _master(tmp_path, [a, b], sr)
+    assert set(conform_stems({"bass": tmp_path / "a.wav", "other": tmp_path / "b.wav"},
+                             master, tmp_path / "out")) == {"bass", "other"}
+    with pytest.raises(RuntimeError, match="line up"):
+        conform_stems({"bass": tmp_path / "a_late.wav", "other": tmp_path / "b_late.wav"},
+                      master, tmp_path / "late")
+
+
 def test_conform_rejects_stems_whose_level_doesnt_match_the_master(tmp_path):
     a, b = _noise(tmp_path / "a.wav", 44100, 1), _noise(tmp_path / "b.wav", 44100, 2)
     master = _master(tmp_path, [a / 0.7, b / 0.7])
