@@ -57,6 +57,8 @@ def test_resolve_refuses_far_starts_and_names_the_row(tmp_path, click_track, mon
 
 def test_cut_files_tags_and_checks_in_a_workspace(tmp_path, click_track, monkeypatch):
     ws = _ws(tmp_path, click_track, monkeypatch)
+    (ws.stems / "Artist - Clicks").mkdir(parents=True)                  # stem rows are cut from the stem
+    (ws.stems / "Artist - Clicks" / "bass.aiff").write_bytes((ws.masters / "Artist - Clicks.aiff").read_bytes())
     (ws.manifests / "s.csv").write_text(
         "source,track_id,label,artist,track,bars,bpm,start,stem,key\n"
         f"{ws.masters / 'Artist - Clicks.aiff'},Artist - Clicks,A1,Artist,Clicks,4,128,15.0,bass,8A\n")
@@ -212,3 +214,30 @@ def test_cut_writes_oneshots_and_crossfaded_loops(tmp_path, click_track, monkeyp
     assert read_tag(one, "TBPM") is None and read_tag(one, "TIT2").endswith("[V1][oneshot]")
     assert (ws.loops / "aiff" / "full" / "125-129" / "Artist - Clicks [A1][128][4bar].aiff").exists()
     assert "Live infers tempo" not in capsys.readouterr().out
+
+
+def test_stems_command_separates_and_conforms_each_track(tmp_path, click_track, monkeypatch, capsys):
+    import loopcutter.stems as stems
+
+    _ws(tmp_path, click_track, monkeypatch)
+    calls = []
+    monkeypatch.setattr(stems, "separate", lambda src, out, engine, model: calls.append((engine, model)) or {"bass": src})
+    monkeypatch.setattr(stems, "conform_stems", lambda raw, master, out: {"bass": out / "bass.aiff"})
+    assert main(["stems", "Artist - Clicks"]) == 0
+    assert calls == [("audio-separator", "htdemucs_6s.yaml")] and "bass" in capsys.readouterr().out
+    assert main(["stems", "Unknown"]) == 1
+
+
+def test_stem_rows_are_cut_from_the_stem_and_timed_on_the_full_mix(tmp_path, click_track, monkeypatch, capsys):
+    ws = _ws(tmp_path, click_track, monkeypatch)
+    master = ws.masters / "Artist - Clicks.aiff"
+    (ws.manifests / "s.csv").write_text("source,track_id,label,bars,bpm,start,stem\n"
+                                        f"{master},Artist - Clicks,A1,4,128,15.0,bass\n")
+    assert main(["cut", "manifests/s.csv"]) == 1
+    assert "loopcutter stems" in capsys.readouterr().err
+    audio, sr = sf.read(str(master), dtype="float32", always_2d=True)
+    (ws.stems / "Artist - Clicks").mkdir(parents=True)
+    sf.write(str(ws.stems / "Artist - Clicks" / "bass.aiff"), audio * 0.5, sr, format="AIFF", subtype="PCM_24")
+    assert main(["cut", "manifests/s.csv"]) == 0
+    loop, _ = sf.read(str(ws.loops / "aiff" / "bass" / "125-129" / "Artist - Clicks [A1][128][4bar][bass].aiff"))
+    assert np.max(np.abs(loop)) == pytest.approx(0.5 * np.max(np.abs(audio)), rel=0.05)

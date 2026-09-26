@@ -19,7 +19,7 @@ dependencies = [
 analysis = ["beat-this>=1.1", "librosa>=0.10"]
 markers = ["pyrekordbox>=0.4", "serato-tools>=4.0"]
 verify = ["librosa>=0.10"]
-stems = ["audio-separator>=0.47"]
+stems = ["audio-separator[cpu]>=0.47", "audioread>=3.0"]     # 0.47 needs both but declares neither
 sheets = ["openpyxl>=3.1"]
 dev = ["pytest>=7.0"]
 

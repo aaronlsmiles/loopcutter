@@ -15,8 +15,10 @@ import csv
 import importlib.util
 import shutil
 import statistics
+import subprocess
 import sys
 from collections import defaultdict
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -277,6 +279,30 @@ def _cmd_resolve(args) -> int:
     return 1 if failures else 0
 
 
+def _cmd_stems(args) -> int:
+    from .stems import DEFAULT_MODEL, conform_stems, separate
+
+    ws = _workspace_or_exit()
+    tracks = load_tracks(ws.tracks_csv)
+    model = args.model or (DEFAULT_MODEL if args.engine == "audio-separator" else "htdemucs_6s")
+    failures = 0
+    for track_id in args.tracks:
+        record = tracks.get(track_id)
+        if record is None:
+            print(f"  FAIL {track_id}: not in tracks.csv", file=sys.stderr)
+            failures += 1
+            continue
+        try:
+            raw = separate(record.master, ws.stems, engine=args.engine, model=model)
+            stems = conform_stems(raw, record.master, ws.stems / track_id)
+        except (RuntimeError, OSError, subprocess.CalledProcessError) as exc:
+            print(f"  FAIL {track_id}: {exc}", file=sys.stderr)
+            failures += 1
+            continue
+        print(f"  {track_id}: " + ", ".join(sorted(stems)))
+    return 1 if failures else 0
+
+
 def _tag(result, spec) -> None:
     from .tags import write_loop_tags
 
@@ -324,6 +350,17 @@ def _cmd_cut(args) -> int:
 
     failures = 0
     for spec in specs:
+        timing_source = None
+        if spec.stem and spec.stem != "full" and spec.track_id and ws is not None:
+            stem_file = ws.stems / spec.track_id / f"{spec.stem}.aiff"
+            if not stem_file.exists():
+                print(f"  FAIL row {spec.row_number}: no {spec.stem} stem yet - run "
+                      f"`loopcutter stems \"{spec.track_id}\"`", file=sys.stderr)
+                failures += 1
+                continue
+            # keep the track's name: the file is now bass.aiff, but the loop is still this track's
+            timing_source = spec.source
+            spec = replace(spec, source=stem_file, track=spec.track or spec.source.stem)
         record = tracks.get(spec.track_id) if spec.track_id else None
         out_dir = out_root / library_subdir(spec) if layout == "library" else out_root
         try:
@@ -340,6 +377,7 @@ def _cmd_cut(args) -> int:
             print(f"  FAIL row {spec.row_number}: {exc}", file=sys.stderr)
             failures += 1
             continue
+        result.timing_source = timing_source
         # A track whose tempo moves has no single tempo to check against; measure the audio.
         steady = record is not None and ("grid-fit" not in record.flags.split(";") or record.override_bpm)
         reference = (record.override_bpm or record.bpm_fitted or record.bpm) if steady else None
@@ -427,6 +465,12 @@ def build_parser() -> argparse.ArgumentParser:
                      help="report beat_alignment failures as warnings (for unsteady material)")
     cut.add_argument("--dry-run", action="store_true")
     cut.set_defaults(func=_cmd_cut)
+
+    stems = sub.add_parser("stems", help="separate masters into stems at the master's rate")
+    stems.add_argument("tracks", nargs="+", help="track_ids from tracks.csv")
+    stems.add_argument("--engine", choices=["audio-separator", "demucs"], default="audio-separator")
+    stems.add_argument("--model", default=None)
+    stems.set_defaults(func=_cmd_stems)
 
     keys = sub.add_parser(
         "keys",
