@@ -34,15 +34,20 @@ loop on disk can be rebuilt from one CSV file.
   against the analysis.
 - **Tagged and filed.** AIFF loops carry BPM, key and stem tags (ID3v2.3) and
   are filed by stem and tempo band, ready for a sample browser.
+- **Stems and one-shots.** `stems` separates a master into drums, bass,
+  vocals and more at the master's own rate, and stem rows are cut from them.
+  One-shot rows cut a phrase or stab from a start to an end.
+- **Seamless tonal loops.** An optional pre-roll crossfade blends a loop's
+  tail into the audio just before its start, so a pad wraps without a dip.
 - **Session key planning.** From a list of keys, works out which one to three
   session keys cover the most loops within a transposition limit, and the
   exact shift each loop needs.
 
 ## Status
 
-Version 0.2, in development. The beat grid, the DJ-app import and the checks
-are in place and tested. Stems, one-shots and a seamless crossfade are next;
-see [Roadmap](#roadmap) and [Known issues](#known-issues).
+Version 0.2, in development. The beat grid, the DJ-app import, stems,
+one-shots and the checks are in place and tested. See [Roadmap](#roadmap) and
+[Known issues](#known-issues).
 
 ## Install
 
@@ -65,7 +70,7 @@ Optional extras:
 | `markers` | pyrekordbox, serato-tools | `import` and the DJ-app grid cross-check |
 | `verify` | librosa | the `beat_alignment` and measured-tempo checks in `cut` |
 | `sheets` | openpyxl | reading XLSX key lists |
-| `stems` | audio-separator | stem separation (in progress) |
+| `stems` | audio-separator, onnxruntime, audioread | the `stems` command |
 
 beat_this runs on PyTorch and uses the Apple GPU when there is one; its model
 weights download on first use.
@@ -155,6 +160,9 @@ wasted a lot of time that three rows would have saved.
 | `bpm` | yes | The track's tempo. |
 | `start` | one of | `M:SS.mmm`, `H:MM:SS.mmm` or bare seconds. |
 | `downbeat` + `start_bar` | one of | A precise downbeat time plus a 1-based bar number counted from it. |
+| `kind` | no | `loop` (the default) or `oneshot`. |
+| `end` | one-shots | Where a one-shot ends. A one-shot needs `source`, `label`, `start` and `end`, not `bars` or `bpm`. |
+| `xfade_ms` | no | Pre-roll crossfade length for this loop; overrides `--xfade-ms`. |
 | `track_id` | no | The track's row in `tracks.csv`. `resolve` fills `source`, `bpm` and `key` from it. |
 | `snap` | no | `beat` or `bar` asks `resolve` to move `start` onto the grid. Must be empty before `cut`. |
 | `variations` | no | Extra bar lengths from the same start, such as `"2,1,0.5"`. |
@@ -286,6 +294,20 @@ loopcutter resolve MANIFEST [--max-shift-ms N]
 Fills rows from `tracks.csv` and snaps starts marked `snap=beat` or
 `snap=bar`, after backing the manifest up.
 
+### `stems`
+
+```bash
+loopcutter stems TRACK_ID ... [--engine audio-separator|demucs] [--model NAME]
+```
+
+Separates each master with [audio-separator](https://github.com/nomadkaraoke/python-audio-separator)
+(Demucs `htdemucs_6s` by default: drums, bass, vocals, guitar, piano and
+other), or with the Demucs command line as a fallback. Separators work at
+44.1 kHz, so each stem is resampled to the master's rate and written to
+`stems/<track_id>/<stem>.aiff`, and the stems' sum is proven to line up with
+the master to the sample before any loop is cut from them. Raw output is
+cached, so a second run is instant.
+
 ### `cut`
 
 ```bash
@@ -304,6 +326,7 @@ loopcutter cut MANIFEST [options]
 | `--snap-ms` | `2.0` | Zero-crossing search radius (backwards only). |
 | `--fade-ms` | `0.5` | Edge fade length. |
 | `--trim-db` | `0.0` | Gain for every loop, for example `-1.0`. |
+| `--xfade-ms` | `0.0` | Crossfades each loop's tail into the audio before its start (a row's `xfade_ms` wins). |
 | `--check-bpm` | off | Measures the tempo from the audio. Automatic for analysed tracks. |
 | `--lenient` | off | Reports `beat_alignment` failures as warnings, for unsteady material. |
 | `--dry-run` | off | Resolves every row without writing audio. |
@@ -329,7 +352,12 @@ Files are named `Artist - Track [label][bpm][bars][key][stem].aiff`, for
 example `Some Artist - Some Track [A1][128][4bar][8A][bass].aiff`. The brackets
 make a library easy to sort and search in any browser. In a workspace they are
 filed by stem and tempo band, such as `loops/aiff/bass/125-129/`; loops without
-a stem go under `full/`.
+a stem go under `full/`, and one-shots under `<stem>/oneshots/`, named
+`Artist - Track [label][oneshot].aiff`.
+
+A row that names a `stem` and a `track_id` is cut from that track's separated
+stem, while its timing is still checked on the full mix, where the attacks
+are. `cut` names any stem that hasn't been separated yet.
 
 AIFF loops are tagged with BPM, key, stem (as the grouping), title, artist and
 a comment holding the Camelot key and label. WAV loops are left untagged by
@@ -392,6 +420,8 @@ fail.
   - When under half the beats share a steady attack (breaks, pads, swung
     material), it reports *not judged* rather than guessing.
   - `--lenient` turns its failures into warnings.
+- One-shots have no beats to align and no tempo to match, so they get the
+  length, rate, headroom, silence and DC checks only.
 - **`bpm_match`:** how far the loop's end lands from where the next bar
   begins. Against the analysed tempo it fails above 2 ms; for an unanalysed
   track, `--check-bpm` measures the tempo from the audio and fails above 5 ms.
@@ -441,19 +471,17 @@ is built far more than a few percent of coverage does. The best session key
 is often not the most common one: a key between two clusters can reach more
 material than the biggest cluster.
 
-## Stems
+## Stems and seamless loops
 
-```python
-from loopcutter.stems import separate
+One 4-bar window across six stems gives six loops you can EQ and launch apart:
+run `loopcutter stems "<track_id>"` for the track, then give the rows a
+`stem`. Comment a rekordbox memory loop `A1 bass` and `import` fills it in.
 
-stems = separate("audio/track.aiff", "stems/")   # {"drums": Path, "bass": Path, ...}
-```
-
-This calls Demucs (`htdemucs_6s` by default, six stems) and skips tracks
-already separated. Point manifest rows at the stem files and tag them with
-`stem`. One 4-bar window across six stems gives six loops you can EQ apart.
-The original Demucs repository is archived; a `stems` command built on
-audio-separator is on the [Roadmap](#roadmap).
+Edge fades stop a loop clicking, but on a sustained pad they dip to silence
+at every wrap. `--xfade-ms 20` (or a row's `xfade_ms`) instead fades the
+loop's tail into the audio just before its start, so the wrap plays exactly
+what the source played there. The length doesn't change, and because the two
+sides are similar audio, the linear blend never exceeds the source's peak.
 
 ## Known issues
 
@@ -471,10 +499,6 @@ audio-separator is on the [Roadmap](#roadmap).
 
 ## Roadmap
 
-- A `stems` command on audio-separator, with stems resampled to the master's
-  rate and proven to line up with it before any loop is cut from them.
-- One-shot rows for phrases and stabs, and an optional pre-roll crossfade so
-  tonal loops wrap without a dip.
 - An audition page: each master's waveform with the cutter's own bar lines,
   where a click previews the exact loop and a key accepts it into a manifest.
 - Ableton integration: the right tempo for odd-length and half-bar clips, and
@@ -508,7 +532,7 @@ src/loopcutter/
   naming.py     output filename convention and library layout
   keys.py       key parsing and session-cover arithmetic, no file I/O
   keyreport.py  spreadsheet loading and report rendering
-  stems.py      optional Demucs pre-pass
+  stems.py      separation, resampling to the master, alignment proof
   cli.py        command-line entry point
 ```
 
