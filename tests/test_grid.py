@@ -127,3 +127,10 @@ def test_fit_survives_swing_and_dropouts():
     grid = fit_grid(_quantised(np.sort(detections)))
     assert grid.bpm == pytest.approx(140.0, abs=0.01)
     assert grid.inlier_ratio > 0.7
+
+
+def test_compare_grids_reports_how_well_the_app_grid_lines_up():
+    grid = Grid(period=P128, phase=0.0)
+    assert compare_grids(grid, np.arange(100) * P128 + 0.041)["app_agreement"] > 0.99
+    scattered = np.sort(np.random.default_rng(1).uniform(0, 100 * P128, 100))
+    assert compare_grids(grid, scattered)["app_agreement"] < 0.5

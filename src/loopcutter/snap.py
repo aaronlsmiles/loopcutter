@@ -45,6 +45,30 @@ def track_grid(record: TrackRecord) -> Grid:
     return grid.shifted(record.override_phase_ms / 1000) if record.override_phase_ms else grid
 
 
+def grid_at(record: TrackRecord, t: float,
+            beats_for: Callable[[TrackRecord], tuple | None] | None = None) -> tuple[Grid, float]:
+    """The grid to snap against near time t, and the tempo a loop starting there has.
+
+    A track whose beats don't fit one steady grid (flagged grid-fit) gets a grid
+    fitted to the cached beats around t, moved onto the attack by the track's
+    measured offset and your override, as the whole-track grid was.
+    """
+    if not (record.override_bpm or record.bpm_fitted or record.bpm):
+        raise SnapError("not analysed yet - run `loopcutter scan`")
+    if beats_for is None or "grid-fit" not in record.flags.split(";") or record.override_bpm:
+        return track_grid(record), record.override_bpm or record.bpm
+    cached = beats_for(record)
+    if cached is None:
+        raise SnapError("its beats don't fit one steady grid and there is no beat cache - "
+                        f"run `loopcutter scan --force \"{record.track_id}\"`")
+    try:
+        grid = local_grid(*cached, t=t)
+    except GridError as exc:
+        raise SnapError(str(exc)) from None
+    shift = (record.phase_offset_ms + (record.override_phase_ms or 0.0)) / 1000
+    return (grid.shifted(shift) if shift else grid), nominal_bpm(grid.bpm)
+
+
 def snap_time(t: float, grid: Grid, mode: str = "beat", max_shift_ms: float = 60.0) -> SnapResult:
     if mode == "off":
         n = grid.beat_index(t)
@@ -75,9 +99,13 @@ def _same_file(a, b) -> bool:
 
 
 def _app_correction(record: TrackRecord, marker: Marker) -> float:
+    """The app's measured offset, for marks on the file it was measured on (rekordbox reads
+    the master; Serato the source it tagged)."""
     flags = set(record.flags.split(";"))
     same_app = record.app and marker.app.startswith(record.app)
-    if same_app and record.app_offset_ms is not None and not flags & {"half-beat", "app-bpm"}:
+    measured_on = record.master if record.app.startswith("rekordbox") else record.source
+    if (same_app and _same_file(marker.path, measured_on) and record.app_offset_ms is not None
+            and not flags & {"half-beat", "app-bpm"}):
         return record.app_offset_ms / 1000
     return 0.0
 
@@ -95,17 +123,12 @@ def markers_to_rows(markers: list[Marker], tracks: dict[str, TrackRecord], *,
         where = f"{marker.path.name} at {marker.start:.3f}s"
         flags = set(record.flags.split(";"))
         t = marker.start - _app_correction(record, marker)
-        grid, bpm = track_grid(record), record.override_bpm or record.bpm
-        use_local = beats_for is not None and "grid-fit" in flags and not record.override_bpm
-        cached = beats_for(record) if use_local else None
-        if cached is not None:
-            try:
-                grid = local_grid(*cached, t=t)
-            except GridError as exc:
-                result.problems.append(f"{where}: {exc}")
-                continue
-            bpm = nominal_bpm(grid.bpm)
-        unsure = "phase" in flags and not record.override_phase_ms
+        try:
+            grid, bpm = grid_at(record, t, beats_for)
+        except SnapError as exc:
+            result.problems.append(f"{where}: {exc}")
+            continue
+        unsure = "phase" in flags and record.override_phase_ms is None
         if unsure and marker.app.startswith("rekordbox") and _same_file(marker.path, record.master):
             # rekordbox reads the master's own samples, so its quantised mark is the best phase we have
             snap = SnapResult(marker.start, marker.start, grid.beat_index(marker.start), False)

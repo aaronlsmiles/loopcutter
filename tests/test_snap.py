@@ -110,3 +110,48 @@ def test_write_manifest_refuses_to_overwrite(tmp_path):
         assert next(csv.reader(fh)) == MANIFEST_FIELDS
     with pytest.raises(FileExistsError):
         write_manifest([], out)
+
+
+def _tempo_change():
+    first = np.arange(150) * 60 / 120
+    second = first[-1] + np.arange(1, 151) * 60 / 128
+    beats = np.concatenate([first, second])
+    return beats, beats[::4]
+
+
+def test_a_local_grid_keeps_the_attack_correction_and_your_override(tmp_path):
+    beats, downbeats = _tempo_change()
+    target = beats[190]                                        # raw detector beat, 15 ms after the attack
+    marker = Marker(tmp_path / "Artist - Song.mp3", target + 0.02, None, "", "serato")
+    corrected = _rec(tmp_path, bpm=124.0, phase=0.0, inlier_ratio=0.5, flags="grid-fit", phase_offset_ms=-15.0)
+    result = markers_to_rows([marker], {corrected.track_id: corrected}, beats_for=lambda r: (beats, downbeats))
+    assert float(result.rows[0]["start"]) == pytest.approx(target - 0.015, abs=0.001)
+    overridden = _rec(tmp_path, bpm=124.0, phase=0.0, inlier_ratio=0.5, flags="grid-fit", override_phase_ms=20.0)
+    result = markers_to_rows([marker], {overridden.track_id: overridden}, beats_for=lambda r: (beats, downbeats))
+    assert float(result.rows[0]["start"]) == pytest.approx(target + 0.020, abs=0.001)
+
+
+def test_an_unanalysed_track_or_a_missing_beat_cache_is_reported_not_crashed(tmp_path):
+    marker = Marker(tmp_path / "Artist - Song.mp3", 10.0, None, "", "serato")
+    unscanned = _rec(tmp_path, bpm=0.0)
+    assert "scan" in markers_to_rows([marker], {unscanned.track_id: unscanned}).problems[0]
+    shaky = _rec(tmp_path, inlier_ratio=0.5, flags="grid-fit")
+    result = markers_to_rows([marker], {shaky.track_id: shaky}, beats_for=lambda r: None)
+    assert not result.rows and "beat cache" in result.problems[0]
+
+
+def test_the_app_offset_only_applies_to_marks_on_the_file_it_was_measured_on(tmp_path):
+    rec = _rec(tmp_path, app="serato", app_offset_ms=41.0)
+    beat = 0.1 + 64 * P125
+    on_master = Marker(tmp_path / "Artist - Song.aiff", beat + 0.010, None, "A1", "serato")
+    result = markers_to_rows([on_master], {rec.track_id: rec}, max_shift_ms=25)   # corrected, it would be 31 ms out
+    assert float(result.rows[0]["start"]) == pytest.approx(beat, abs=1e-6)
+    assert result.moves_ms == [pytest.approx(-10.0, abs=0.01)]
+
+
+def test_a_zero_phase_override_confirms_a_phase_flagged_grid(tmp_path):
+    rec = _rec(tmp_path, flags="phase", override_phase_ms=0.0)
+    beat = 0.1 + 64 * P125
+    marker = Marker(tmp_path / "Artist - Song.mp3", beat + 0.012, None, "A1", "serato")
+    result = markers_to_rows([marker], {rec.track_id: rec})
+    assert float(result.rows[0]["start"]) == pytest.approx(beat, abs=1e-6)

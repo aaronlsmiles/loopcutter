@@ -173,15 +173,16 @@ def compare_grids(grid: Grid, app_beats) -> dict:
     app = np.asarray(app_beats, dtype=float)
     if app.size < 2:
         return {}
-    angle = float(np.angle(np.mean(np.exp(2j * np.pi * (app - grid.phase) / grid.period))))
-    offset = angle / (2 * np.pi) * grid.period
+    resultant = np.mean(np.exp(2j * np.pi * (app - grid.phase) / grid.period))
+    offset = float(np.angle(resultant)) / (2 * np.pi) * grid.period
     # Across the whole grid, not one interval: rekordbox keeps beat times in whole
     # milliseconds, so single intervals alternate (468 and 469 ms at 128 BPM).
     span = float(app[-1] - app[0])
     beats = max(1, round(span / float(np.median(np.diff(app)))))
     return {"app_bpm": 60.0 * beats / span,
             "app_offset_ms": offset * 1000,
-            "half_beat": abs(offset) > 0.4 * grid.period}
+            "half_beat": abs(offset) > 0.4 * grid.period,
+            "app_agreement": float(abs(resultant))}       # 1 = every app beat at the same offset
 
 
 def save_beats(path, beats, downbeats) -> None:
