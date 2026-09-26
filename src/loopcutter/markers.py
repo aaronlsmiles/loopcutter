@@ -18,7 +18,7 @@ from mutagen.mp3 import MP3
 
 from .model import Marker, MarkerNote
 
-STEMS = {"full", "drums", "bass", "other", "vocals", "guitar", "piano"}
+STEMS = {"full", "drums", "bass", "other", "vocals", "guitar", "piano", "instrumental"}
 SERATO_SUFFIXES = {".mp3", ".aif", ".aiff"}        # serato-tools' own opener misses ".aif"; we open it ourselves
 _ROLLS = re.compile(r"^\d+(?:\.\d+)?(?:,\d+(?:\.\d+)?)*$")
 

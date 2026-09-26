@@ -200,6 +200,7 @@ def test_a_stretch_the_detector_hears_in_eighth_notes_keeps_the_track_tempo(tmp_
     marker = Marker(tmp_path / "Artist - Song.mp3", 0.3 + 300 * period + 0.01, None, "", "serato")
     result = markers_to_rows([marker], {rec.track_id: rec}, beats_for=lambda r: (beats, beats[::4]))
     assert result.rows[0]["bpm"] == "126"
+    assert float(result.rows[0]["start"]) == pytest.approx(0.3 + 300 * period, abs=1e-6)
 
 
 def test_a_double_time_stretch_where_the_whole_grid_does_not_fit_is_refused(tmp_path):

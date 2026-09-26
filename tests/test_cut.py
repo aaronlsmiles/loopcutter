@@ -136,7 +136,7 @@ def test_variations_tile_within_a_sample(click_track, tmp_path):
     """Variations must tile, allowing for unavoidable integer rounding.
 
     At 128 BPM / 44.1 kHz a bar is 82687.5 samples, so a 1-bar loop cannot
-    divide a 4-bar one exactly. One sample is the most that rounding can cost.
+    divide a 4-bar one exactly. Rounding each length once costs at most two samples here.
     """
     path = tmp_path / "halves.csv"
     path.write_text(
@@ -151,7 +151,7 @@ def test_variations_tile_within_a_sample(click_track, tmp_path):
 
 
 def test_tiling_is_exact_at_48k():
-    """48 kHz is the reason to prefer it: 128 BPM gives whole samples per bar."""
+    """At 128 BPM, 48 kHz gives whole samples per bar (other tempos tile at 44.1 kHz instead)."""
     from loopcutter.timing import loop_length_samples, tiling_error_samples
 
     assert loop_length_samples(1, 128, 48000) == 90000

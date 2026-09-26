@@ -314,3 +314,23 @@ def test_a_long_loop_at_the_analysed_whole_tempo_passes_the_tempo_check(tmp_path
     monkeypatch.chdir(ws.root)
     (ws.manifests / "s.csv").write_text(f"source,track_id,label,bars,bpm,start\n{master},Artist - Long,A1,16,128,15.0\n")
     assert main(["cut", "manifests/s.csv"]) == 0
+
+
+def test_import_defaults_to_the_workspace_marking_app(tmp_path, click_track, monkeypatch):
+    from types import SimpleNamespace as NS
+
+    import loopcutter.markers as markers
+
+    ws = _ws(tmp_path, click_track, monkeypatch)
+    (ws.root / "loopcutter.toml").write_text((ws.root / "loopcutter.toml").read_text()
+                                             .replace('app = "rekordbox"', 'app = "serato"'))
+    monkeypatch.setattr(markers, "SERATO_SUFFIXES", {".wav", ".mp3", ".aiff"})
+    monkeypatch.setattr(markers, "_serato_entries", lambda p: [NS(position=int((32 * P128 + 0.02) * 1000), name="A1")])
+    assert main(["import", "--out", "manifests/imp.csv"]) == 0
+    assert load_manifest(ws.manifests / "imp.csv")[0].start_seconds == pytest.approx(15.0)
+
+
+def test_a_zero_shift_limit_means_zero(tmp_path, click_track, monkeypatch):
+    ws = _ws(tmp_path, click_track, monkeypatch)
+    (ws.manifests / "s.csv").write_text("track_id,label,bars,start,snap\nArtist - Clicks,A1,4,15.03,beat\n")
+    assert main(["resolve", "manifests/s.csv", "--max-shift-ms", "0"]) == 1

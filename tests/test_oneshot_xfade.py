@@ -57,3 +57,26 @@ def test_an_xfade_longer_than_the_loop_is_refused(click_track, tmp_path):
     path.write_text(f"source,label,bars,bpm,start\n{click_track['path']},P1,0.25,128,15.0\n")
     with pytest.raises(ValueError, match="crossfade"):
         cut_loop(load_manifest(path)[0], tmp_path / "out", fmt="wav", xfade_ms=500)
+
+
+def test_a_crossfade_with_no_audio_before_the_start_is_refused(click_track, tmp_path):
+    path = tmp_path / "p.csv"
+    path.write_text(f"source,label,bars,bpm,start\n{click_track['path']},P1,4,128,0.005\n")
+    with pytest.raises(ValueError, match="crossfade"):
+        cut_loop(load_manifest(path)[0], tmp_path / "out", fmt="wav", snap_ms=0, xfade_ms=20)
+
+
+def test_bad_oneshot_and_xfade_cells_name_the_row(click_track, tmp_path):
+    path = tmp_path / "o.csv"
+    path.write_text(f"source,label,kind,start,end\n{click_track['path']},V1,oneshot,-0.5,1.0\n")
+    with pytest.raises(ManifestError, match="row 2"):
+        load_manifest(path)
+    path.write_text(f"source,label,bars,bpm,start,xfade_ms\n{click_track['path']},P1,4,128,15.0,abc\n")
+    with pytest.raises(ManifestError, match="row 2.*xfade_ms"):
+        load_manifest(path)
+
+
+def test_stem_names_are_lowercased(click_track, tmp_path):
+    path = tmp_path / "s.csv"
+    path.write_text(f"source,label,bars,bpm,start,stem\n{click_track['path']},P1,4,128,15.0,Bass\n")
+    assert load_manifest(path)[0].stem == "bass"

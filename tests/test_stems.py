@@ -212,3 +212,23 @@ def test_a_stem_a_few_samples_off_on_its_own_still_passes_when_the_sum_lines_up(
     sf.write(str(tmp_path / "b.wav"), np.column_stack([near, near]), sr)
     out = conform_stems({"drums": tmp_path / "a.wav", "bass": tmp_path / "b.wav"}, master, tmp_path / "out")
     assert set(out) == {"drums", "bass"}
+
+
+def test_the_limits_are_one_sample_for_the_sum_and_one_millisecond_per_stem(tmp_path):
+    sr = 44100
+    drums = _noise(tmp_path / "a.wav", sr, 0)
+    bass = _noise(tmp_path / "b.wav", sr, 1)
+    master = _master(tmp_path, [drums, bass])
+    for name, x in (("a2", drums), ("b2", bass)):
+        shifted = np.roll(x, 2)
+        sf.write(str(tmp_path / f"{name}.wav"), np.column_stack([shifted, shifted]), sr)
+    with pytest.raises(RuntimeError, match="stems don't line up"):
+        conform_stems({"drums": tmp_path / "a2.wav", "bass": tmp_path / "b2.wav"}, master, tmp_path / "o1")
+    rng = np.random.default_rng(6)
+    low = np.convolve(rng.normal(0.0, 1.0, drums.size), np.ones(400) / 400, "same").astype("float32")
+    low *= 0.1 / np.std(low)
+    master = _master(tmp_path, [drums, low])
+    late = np.roll(low, 88)                                      # 2 ms
+    sf.write(str(tmp_path / "late.wav"), np.column_stack([late, late]), sr)
+    with pytest.raises(RuntimeError, match="bass doesn't line up"):
+        conform_stems({"drums": tmp_path / "a.wav", "bass": tmp_path / "late.wav"}, master, tmp_path / "o2")

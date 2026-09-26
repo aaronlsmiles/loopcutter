@@ -132,7 +132,10 @@ def _xfade(row: dict[str, str], row_number: int) -> float | None:
     raw = row.get("xfade_ms")
     if raw in (None, ""):
         return None
-    value = float(raw)
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ManifestError(f"row {row_number}: xfade_ms must be a number, got {raw!r}") from None
     if value < 0:
         raise ManifestError(f"row {row_number}: xfade_ms can't be negative, got {value:g}")
     return value
@@ -176,13 +179,15 @@ def load_manifest(path: str | Path, audio_root: str | Path | None = None) -> lis
                 if missing:
                     raise ManifestError(f"row {offset}: a oneshot needs {missing}")
                 start, end = parse_position(row["start"]), parse_position(row["end"])
+                if start < 0:
+                    raise ManifestError(f"row {offset}: start can't be before the file")
                 if end <= start:
                     raise ManifestError(f"row {offset}: end must be after start")
                 source = Path(row["source"])
                 specs.append(LoopSpec(
                     source=source if source.is_absolute() else root / source, label=row["label"],
                     bars=0.0, bpm=float(row.get("bpm") or 0), start_seconds=start,
-                    stem=row.get("stem") or None, artist=row.get("artist") or None,
+                    stem=(row.get("stem") or "").lower() or None, artist=row.get("artist") or None,
                     track=row.get("track") or None, key=row.get("key") or None,
                     notes=row.get("notes") or "", row_number=offset, kind="oneshot",
                     end_seconds=end, track_id=row.get("track_id") or None))
@@ -216,7 +221,7 @@ def load_manifest(path: str | Path, audio_root: str | Path | None = None) -> lis
                         bpm=bpm,
                         start_seconds=start,
                         beats_per_bar=beats_per_bar,
-                        stem=row.get("stem") or None,
+                        stem=(row.get("stem") or "").lower() or None,
                         artist=row.get("artist") or None,
                         track=row.get("track") or None,
                         key=row.get("key") or None,

@@ -5,7 +5,10 @@
     loopcutter scan --app rekordbox            grid, phase, key and doubts per track
     loopcutter import --from rekordbox         your marked loops, snapped, as a manifest
     loopcutter resolve manifests/set.csv       fill and snap hand-typed rows
+    loopcutter stems "<track_id>"              separate a master into aligned stems
     loopcutter cut manifests/set.csv           cut, verify, tag and file
+    loopcutter keys library.xlsx               plan session keys
+    loopcutter inspect loop.aiff --bpm 128     length in beats and bars
 """
 
 from __future__ import annotations
@@ -177,6 +180,11 @@ def _cmd_import(args) -> int:
     ws = _workspace_or_exit()
     tracks = load_tracks(ws.tracks_csv)
     playlist = args.playlist or ws.setting("marking", "playlist", "")
+    args.source = args.source or ws.setting("marking", "app", "rekordbox")
+    if args.source not in {"rekordbox", "rekordbox-xml", "serato"}:
+        print(f"error: [marking] app must be rekordbox, rekordbox-xml or serato, got {args.source!r}",
+              file=sys.stderr)
+        return 2
     try:
         if args.source == "serato":
             paths = [Path(p) for p in args.files] or [Path(r.source) for r in tracks.values()]
@@ -193,7 +201,7 @@ def _cmd_import(args) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     result = markers_to_rows(markers, tracks, beats_for=_beats_for(ws),
-                             max_shift_ms=args.max_shift_ms or ws.setting("snap", "max_shift_ms", 60))
+                             max_shift_ms=(args.max_shift_ms if args.max_shift_ms is not None else ws.setting("snap", "max_shift_ms", 60)))
     out = Path(args.out) if args.out else ws.manifests / f"import-{args.source}-{_stamp()}.csv"
     try:
         write_manifest(result.rows, out)
@@ -230,7 +238,7 @@ def _cmd_resolve(args) -> int:
     for column in ("source", "bpm", "key", "snap", "notes"):
         if column not in fields:
             fields.append(column)
-    limit = args.max_shift_ms or ws.setting("snap", "max_shift_ms", 60)
+    limit = (args.max_shift_ms if args.max_shift_ms is not None else ws.setting("snap", "max_shift_ms", 60))
     failures = changed = 0
     for number, row in enumerate(rows, start=2):
         track_id = row.get("track_id")
@@ -453,7 +461,8 @@ def build_parser() -> argparse.ArgumentParser:
     scan.set_defaults(func=_cmd_scan)
 
     imp = sub.add_parser("import", help="turn loops marked in DJ software into a resolved manifest")
-    imp.add_argument("--from", dest="source", required=True, choices=["rekordbox", "rekordbox-xml", "serato"])
+    imp.add_argument("--from", dest="source", default=None, choices=["rekordbox", "rekordbox-xml", "serato"],
+                     help="default: [marking] app in loopcutter.toml")
     imp.add_argument("files", nargs="*", help="Serato: audio files (default: every source)")
     imp.add_argument("--playlist", default=None)
     imp.add_argument("--xml", default=None, help="rekordbox XML export (for rekordbox-xml)")

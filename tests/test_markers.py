@@ -141,3 +141,7 @@ class _FakeDBNoBeatGrid:
 def test_rekordbox_beats_returns_empty_when_analysis_has_no_beat_grid_tag(tmp_path):
     """pyrekordbox's anlz.get('beat_grid') raises IndexError when the PQTZ tag is missing."""
     assert rekordbox_beats(_FakeDBNoBeatGrid(), tmp_path / "x.aiff").size == 0
+
+
+def test_parse_note_knows_every_separator_stem():
+    assert parse_note("A1 instrumental").stem == "instrumental"

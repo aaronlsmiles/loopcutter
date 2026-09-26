@@ -132,7 +132,10 @@ def cut_loop(
         )
 
     audio = block[snapped : snapped + window.length_samples]
-    pre = block[snapped - xfade : snapped] if xfade and snapped >= xfade else None
+    if xfade and snapped < xfade:
+        raise ValueError(f"row {spec.row_number}: a {xfade_ms:g} ms crossfade needs that much audio "
+                         "before the start, and the file begins too soon")
+    pre = block[snapped - xfade : snapped] if xfade else None
     source_peak = max(float(np.max(np.abs(audio))) if len(audio) else 0.0,
                       float(np.max(np.abs(pre))) if pre is not None else 0.0)
     if pre is not None:
