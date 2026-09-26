@@ -113,7 +113,7 @@ directory to the folder holding `loopcutter.toml`.
 | `[audio] subtype` | `"PCM_24"` | The masters' sample format. |
 | `[sources] paths` | `[]` | Folders or files that `prep` reads when given none. |
 | `[snap] max_shift_ms` | `60` | The furthest a start may be moved onto the grid. |
-| `[marking] app` | `"rekordbox"` | `rekordbox`, `rekordbox-xml` or `serato`. |
+| `[marking] app` | `"rekordbox"` | What `import` reads when `--from` isn't given: `rekordbox`, `rekordbox-xml` or `serato`. |
 | `[marking] playlist` | `""` | The rekordbox playlist that holds your masters. |
 
 ## Quick start
@@ -127,7 +127,7 @@ directory to the folder holding `loopcutter.toml`.
 
 2. Mark loops in rekordbox (see [Marking loops in DJ software](#marking-loops-in-dj-software))
    and import them, or write a manifest by hand. [manifests/example.csv](manifests/example.csv)
-   shows every column.
+   shows the common columns.
 
 3. Check that every row resolves, then cut:
 
@@ -264,7 +264,7 @@ flag for anything doubtful:
 
 | Flag | Means |
 |---|---|
-| `grid-fit` | Under 90% of the detected beats fit one steady grid: a tempo change, a long break or a swung rhythm. Snapping then uses a local grid fitted around each mark. |
+| `grid-fit` | Under 90% of the detected beats fit one steady grid: a tempo change, a long break or a swung rhythm. Snapping uses the whole-track grid wherever it still fits the beats around a mark, and a local grid only where one fits clearly better (a real tempo change). |
 | `bar-phase` | The downbeats disagree about which beat is the one. |
 | `phase` | The attacks don't agree on where the beat sits. Only rekordbox marks made on the master are kept as they are. |
 | `key` | The key tag and keyfinder disagree. |
@@ -279,11 +279,11 @@ skipped unless you pass `--force`. A report of each run goes in `reports/`.
 ### `import`
 
 ```bash
-loopcutter import --from rekordbox|rekordbox-xml|serato [FILES ...] [--playlist NAME] [--xml FILE] [--out FILE] [--max-shift-ms N]
+loopcutter import [--from rekordbox|rekordbox-xml|serato] [FILES ...] [--playlist NAME] [--xml FILE] [--out FILE] [--max-shift-ms N]
 ```
 
-Turns marked loops into a resolved manifest. An existing file is never
-overwritten.
+Turns marked loops into a resolved manifest. `--from` defaults to `[marking]
+app`. An existing file is never overwritten.
 
 ### `resolve`
 
@@ -393,8 +393,9 @@ its parent exactly. Whether it does depends on the tempo as well as the rate:
 | 48 kHz | 120, 125, 128, 144, 150, 160 BPM |
 | 44.1 kHz | 120, 125, 126, 135, 140, 144, 147, 150, 160 BPM |
 
-Neither rate is always better. At other tempos a variation drifts by 1 to 3
-samples per cycle, under 0.07 ms. `cut` reports each drifting variation set
+Neither rate is always better. At other tempos a variation drifts by a few
+samples per cycle: up to 4 for a half bar against 4 bars, and up to 8 against
+8 or 16 bars, under 0.2 ms. `cut` reports each drifting variation set
 and, when the other rate would be exact, names it. DAWs that warp clips
 re-sync them every cycle anyway. loopcutter never resamples at cut time, so
 the rate is chosen once, when `prep` makes the masters.
@@ -425,8 +426,10 @@ fail.
 - One-shots have no beats to align and no tempo to match, so they get the
   length, rate, headroom, silence and DC checks only.
 - **`bpm_match`:** how far the loop's end lands from where the next bar
-  begins. Against the analysed tempo it fails above 2 ms; for an unanalysed
-  track, `--check-bpm` measures the tempo from the audio and fails above 5 ms.
+  begins. Against the tempo `scan` proposed it fails above 2 ms. On a
+  `grid-fit` track, and with `--check-bpm` on an unanalysed one, it measures
+  the tempo from the audio instead and fails above 5 ms; on a `grid-fit`
+  track a half- or double-time tempo fails outright.
 
 A failed check names the file and the reason, and the run exits with an error.
 
@@ -491,8 +494,13 @@ sides are similar audio, the linear blend never exceeds the source's peak.
   `import --from rekordbox` can't read yours, export the collection as XML
   from rekordbox and use `--from rekordbox-xml --xml FILE`.
 - **Tempo-changing tracks get local grids.** A track whose beats don't fit one
-  steady grid is flagged `grid-fit`, and each mark is snapped against a grid
-  fitted to the 64 beats around it. Its `tracks.csv` tempo is only an average.
+  steady grid is flagged `grid-fit`. Each mark is snapped to the whole-track
+  grid where that still fits the nearby beats, and otherwise to a grid fitted
+  to the 64 beats around it, provided that grid fits clearly better and its
+  tempo isn't a half- or double-time reading. A mark where neither holds is
+  refused. On a tempo-changing track the `tracks.csv` tempo is only an
+  average, so `cut` checks those loops against the tempo measured from the
+  audio.
 - **Odd bar lengths need their tempo set in Live by hand** (see
   [Output files](#output-files)).
 - **Starts in beatless passages can't be judged.** `beat_alignment` reports
