@@ -89,3 +89,54 @@ def test_conform_replaces_the_previous_set_and_keeps_the_raw_cache(tmp_path):
     conform_stems({"bass": tmp_path / "a.wav", "other": tmp_path / "b.wav"}, master, out)
     assert sorted(p.name for p in out.glob("*.aiff")) == ["bass.aiff", "other.aiff"]
     assert (out / "raw" / "cached.wav").exists() and not list(tmp_path.glob("out.*"))
+
+
+def test_conform_rejects_stems_whose_level_doesnt_match_the_master(tmp_path):
+    a, b = _noise(tmp_path / "a.wav", 44100, 1), _noise(tmp_path / "b.wav", 44100, 2)
+    master = _master(tmp_path, [a / 0.7, b / 0.7])
+    with pytest.raises(RuntimeError, match=r"level doesn't match the master: -3\.1 dB"):
+        conform_stems({"bass": tmp_path / "a.wav", "other": tmp_path / "b.wav"}, master, tmp_path / "out")
+    assert not list((tmp_path / "out").glob("*.aiff"))
+
+
+def test_conform_reports_gain_and_clipped_samples(tmp_path):
+    a = np.random.default_rng(1).normal(0.0, 0.1, 44100 * 6).astype("float32")
+    b = np.random.default_rng(2).normal(0.0, 0.1, 44100 * 6).astype("float32")
+    a[1000:1003] = 1.5
+    for name, x in (("a", a), ("b", b)):
+        sf.write(str(tmp_path / f"{name}.wav"), np.column_stack([x, x]), 44100, subtype="FLOAT")
+    master = tmp_path / "master.wav"
+    sf.write(str(master), np.column_stack([a + b, a + b]), 44100, subtype="FLOAT")
+    out = conform_stems({"bass": tmp_path / "a.wav", "other": tmp_path / "b.wav"}, master, tmp_path / "out")
+    assert out == {"bass": tmp_path / "out" / "bass.aiff", "other": tmp_path / "out" / "other.aiff"}
+    assert abs(out.gain_db) < 0.01 and out.clipped == {"bass": 6, "other": 0}
+
+
+def test_separators_keep_level_and_resolution(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    from loopcutter import stems
+
+    made = {}
+
+    class FakeSeparator:
+        def __init__(self, **kwargs):
+            made.update(kwargs)
+
+        def load_model(self, model_filename):
+            pass
+
+        def separate(self, source):
+            return []
+
+    module = types.ModuleType("audio_separator.separator")
+    module.Separator = FakeSeparator
+    monkeypatch.setitem(sys.modules, "audio_separator.separator", module)
+    stems._audio_separator(tmp_path / "Song.aiff", tmp_path, "m")
+    assert made["normalization_threshold"] == 1.0 and made["use_soundfile"] is True
+
+    commands = []
+    monkeypatch.setattr(stems.subprocess, "run", lambda cmd, check: commands.append(cmd))
+    stems._demucs(tmp_path / "Song.aiff", tmp_path, "m")
+    assert "--float32" in commands[0] and commands[0][commands[0].index("--clip-mode") + 1] == "none"
