@@ -7,15 +7,19 @@ and resolves them against the cutter's grid; never cut at an app's timestamp.
 from __future__ import annotations
 
 import re
+import warnings
 from pathlib import Path
 from typing import Callable, Iterable
 
+import mutagen
 import numpy as np
+from mutagen.aiff import AIFF
+from mutagen.mp3 import MP3
 
 from .model import Marker, MarkerNote
 
 STEMS = {"full", "drums", "bass", "other", "vocals", "guitar", "piano"}
-SERATO_SUFFIXES = {".mp3", ".aif", ".aiff"}        # all serato-tools can open
+SERATO_SUFFIXES = {".mp3", ".aif", ".aiff"}        # serato-tools' own opener misses ".aif"; we open it ourselves
 _ROLLS = re.compile(r"^\d+(?:\.\d+)?(?:,\d+(?:\.\d+)?)*$")
 
 
@@ -38,10 +42,17 @@ def parse_note(text: str | None) -> MarkerNote:
     return MarkerNote(label, stem, rolls)
 
 
+def _open_tagfile(path: Path):
+    """serato-tools' SeratoTrack only opens path *strings* ending ".mp3"/".aiff";
+    ".aif" falls through and leaves it with no tag file at all. Open it ourselves.
+    """
+    return MP3(str(path)) if path.suffix.lower() == ".mp3" else AIFF(str(path))
+
+
 def _serato_entries(path: Path):
     from serato_tools.track_cues_v2 import TrackCuesV2
 
-    return TrackCuesV2(str(path)).entries
+    return TrackCuesV2(_open_tagfile(path)).entries
 
 
 def from_serato(paths: Iterable, reader: Callable | None = None) -> list[Marker]:
@@ -50,7 +61,12 @@ def from_serato(paths: Iterable, reader: Callable | None = None) -> list[Marker]
     for path in (Path(p) for p in paths):
         if path.suffix.lower() not in SERATO_SUFFIXES:
             continue
-        for entry in reader(path):
+        try:
+            entries = reader(path)
+        except (mutagen.MutagenError, ValueError) as exc:
+            warnings.warn(f"{path.name}: can't read Serato cues ({exc})")
+            continue
+        for entry in entries:
             if hasattr(entry, "startposition"):
                 markers.append(Marker(path, entry.startposition / 1000,
                                       entry.endposition / 1000, entry.name or "", "serato"))
@@ -132,13 +148,14 @@ def from_rekordbox_xml(xml_path, playlist: str | None = None) -> list[Marker]:
 
 def serato_beats(path) -> np.ndarray:
     """Every beat of Serato's stored grid, in seconds of Serato's own timeline."""
-    if Path(path).suffix.lower() not in SERATO_SUFFIXES:
+    path = Path(path)
+    if path.suffix.lower() not in SERATO_SUFFIXES:
         return np.array([])
     from serato_tools.track_beatgrid import TrackBeatgrid
 
     try:
-        beats = TrackBeatgrid(str(path)).get_beats()
-    except ValueError:
+        beats = TrackBeatgrid(_open_tagfile(path)).get_beats()
+    except (mutagen.MutagenError, ValueError):
         return np.array([])
     return np.array([b.position_s for b in beats], dtype=float)
 
@@ -150,5 +167,9 @@ def rekordbox_beats(db, audio_path) -> np.ndarray:
     anlz = db.read_anlz_file(content, "DAT")
     if anlz is None:
         return np.array([])
-    _beats, _bpms, times = anlz.get("beat_grid")
+    try:
+        _beats, _bpms, times = anlz.get("beat_grid")
+    except IndexError:
+        # pyrekordbox raises this when the analysis file has no PQTZ (beat grid) tag.
+        return np.array([])
     return np.asarray(times, dtype=float)
