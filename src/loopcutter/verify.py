@@ -77,8 +77,9 @@ def verify_cut(result: CutResult, check_bpm: bool = False,
     report = Report(output=result.output)
     audio, sample_rate = sf.read(str(result.output), dtype="float32", always_2d=True)
 
-    expected = loop_length_samples(result.spec.bars, result.spec.bpm, sample_rate,
-                                   result.spec.beats_per_bar)
+    loop = result.spec.kind == "loop"
+    expected = (loop_length_samples(result.spec.bars, result.spec.bpm, sample_rate,
+                                    result.spec.beats_per_bar) if loop else result.length_samples)
     report.checks.append(Check("sample_count", len(audio) == expected,
                                f"got {len(audio)}, expected {expected}"))
     report.checks.append(Check("sample_rate", sample_rate == result.sample_rate,
@@ -93,6 +94,8 @@ def verify_cut(result: CutResult, check_bpm: bool = False,
     report.checks.append(Check("not_silent", peak > 1e-5, f"peak {peak:.6f}"))
     dc = float(np.max(np.abs(audio.mean(axis=0)))) if audio.size else 0.0
     report.checks.append(Check("dc_offset", dc <= MAX_DC_OFFSET, f"dc {dc:.5f}"))
+    if not loop:
+        return report                  # one-shots have no beats to align and no tempo to match
 
     if not _librosa_available():
         report.checks.append(Check("beat_alignment", True, "not judged - librosa not installed"))

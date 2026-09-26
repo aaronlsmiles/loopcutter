@@ -27,10 +27,12 @@ def build_filename(spec: LoopSpec, fmt: str = "aiff") -> str:
     stub_parts = [p for p in (spec.artist, spec.track) if p]
     stub = " - ".join(stub_parts) if stub_parts else spec.source.stem
 
-    bpm = int(spec.bpm) if float(spec.bpm).is_integer() else round(spec.bpm, 2)
-    bars = int(spec.bars) if float(spec.bars).is_integer() else spec.bars
-
-    tags = [spec.label, str(bpm), f"{bars}bar"]
+    if getattr(spec, "kind", "loop") == "oneshot":
+        tags = [spec.label, "oneshot"]
+    else:
+        bpm = int(spec.bpm) if float(spec.bpm).is_integer() else round(spec.bpm, 2)
+        bars = int(spec.bars) if float(spec.bars).is_integer() else spec.bars
+        tags = [spec.label, str(bpm), f"{bars}bar"]
     if spec.key:
         tags.append(spec.key)
     if spec.stem:
@@ -46,5 +48,6 @@ def bpm_band(bpm: float, width: int = 5) -> str:
 
 
 def library_subdir(spec) -> Path:
-    """<stem>/<bpm band>, e.g. bass/125-129; loops without a stem file under full/."""
-    return Path(sanitise(spec.stem or "full")) / bpm_band(spec.bpm)
+    """<stem>/<bpm band>, e.g. bass/125-129; loops without a stem under full/, one-shots in oneshots/."""
+    stem = Path(sanitise(spec.stem or "full"))
+    return stem / "oneshots" if getattr(spec, "kind", "loop") == "oneshot" else stem / bpm_band(spec.bpm)

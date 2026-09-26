@@ -85,6 +85,7 @@ def cut_loop(
     snap_ms: float = DEFAULT_SNAP_MS,
     fade_ms: float = DEFAULT_FADE_MS,
     trim_db: float = 0.0,
+    xfade_ms: float = 0.0,
     filename: str | None = None,
 ) -> CutResult:
     out_dir = Path(out_dir)
@@ -99,7 +100,8 @@ def cut_loop(
     )
 
     snap_radius = int(round(snap_ms / 1000.0 * info.samplerate))
-    read_start = max(0, window.start_sample - snap_radius)
+    xfade = int(round(xfade_ms / 1000.0 * info.samplerate))
+    read_start = max(0, window.start_sample - snap_radius - xfade)
     read_stop = min(info.frames, window.end_sample + snap_radius + 1)
 
     if read_start >= info.frames:
@@ -127,9 +129,17 @@ def cut_loop(
         )
 
     audio = block[snapped : snapped + window.length_samples]
-    source_peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
-    fade_samples = int(round(fade_ms / 1000.0 * info.samplerate))
-    audio = _apply_edge_fades(audio, fade_samples)
+    pre = block[snapped - xfade : snapped] if xfade and snapped >= xfade else None
+    source_peak = max(float(np.max(np.abs(audio))) if len(audio) else 0.0,
+                      float(np.max(np.abs(pre))) if pre is not None else 0.0)
+    if pre is not None:
+        # The tail fades into the audio just before the start, so the wrap plays
+        # exactly what the source played there: no dip, no step.
+        ramp = np.linspace(0.0, 1.0, xfade, dtype=audio.dtype)[:, None]
+        audio = audio.copy()
+        audio[-xfade:] = audio[-xfade:] * (1.0 - ramp) + pre * ramp
+    else:
+        audio = _apply_edge_fades(audio, int(round(fade_ms / 1000.0 * info.samplerate)))
     if trim_db:
         audio = np.clip(audio * 10.0 ** (trim_db / 20.0), -1.0, 1.0)
 
@@ -142,3 +152,35 @@ def cut_loop(
         peak=float(np.max(np.abs(audio))) if len(audio) else 0.0,
         start_sample=read_start + snapped, source_peak=source_peak, trim_db=trim_db,
     )
+
+
+def cut_oneshot(spec: LoopSpec, out_dir, fmt: str = "aiff", subtype: str = "PCM_24",
+                snap_ms: float = DEFAULT_SNAP_MS, fade_out_ms: float = 10.0,
+                filename: str | None = None, trim_db: float = 0.0) -> CutResult:
+    """A single hit or phrase from start to end: snapped backward to a zero crossing,
+    a sub-millisecond fade in, a short fade out."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if not spec.source.exists():
+        raise FileNotFoundError(f"row {spec.row_number}: source not found: {spec.source}")
+    info = sf.info(str(spec.source))
+    start = int(round(spec.start_seconds * info.samplerate))
+    end = min(info.frames, int(round(spec.end_seconds * info.samplerate)))
+    radius = int(round(snap_ms / 1000.0 * info.samplerate))
+    read_start = max(0, start - radius)
+    block, _ = sf.read(str(spec.source), start=read_start, stop=end, dtype="float32", always_2d=True)
+    snapped = _find_zero_crossing(block, start - read_start, radius, direction="backward")
+    audio = block[snapped:].copy()
+    source_peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
+    fade_in = int(round(DEFAULT_FADE_MS / 1000.0 * info.samplerate))
+    fade_out = min(len(audio) // 2, int(round(fade_out_ms / 1000.0 * info.samplerate)))
+    audio[:fade_in] *= np.linspace(0.0, 1.0, fade_in, dtype=audio.dtype)[:, None]
+    audio[len(audio) - fade_out:] *= np.linspace(1.0, 0.0, fade_out, dtype=audio.dtype)[:, None]
+    if trim_db:
+        audio = np.clip(audio * 10.0 ** (trim_db / 20.0), -1.0, 1.0)
+    destination = out_dir / (filename or f"{spec.slug}.{fmt}")
+    sf.write(str(destination), audio, info.samplerate, format=fmt.upper(), subtype=subtype)
+    return CutResult(spec=spec, output=destination, sample_rate=info.samplerate,
+                     length_samples=len(audio), snap_offset_samples=snapped - (start - read_start),
+                     peak=float(np.max(np.abs(audio))) if len(audio) else 0.0,
+                     start_sample=read_start + snapped, source_peak=source_peak, trim_db=trim_db)
