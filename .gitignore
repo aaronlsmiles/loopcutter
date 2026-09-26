@@ -11,3 +11,14 @@ __pycache__/
 build/
 dist/
 .DS_Store
+*.aif
+*.mp3
+*.m4a
+masters/
+analysis/
+reports/
+manifests/*
+!manifests/example.csv
+loopcutter.toml
+.beads/
+.worktrees/

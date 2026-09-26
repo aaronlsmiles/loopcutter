@@ -7,15 +7,19 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Aaron Smiles" }]
 keywords = ["audio", "loops", "sampling", "dj", "ableton", "live-performance"]
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "numpy>=1.24",
     "soundfile>=0.12",
+    "soxr>=0.3",
+    "mutagen>=1.47",
 ]
 
 [project.optional-dependencies]
+analysis = ["beat-this>=1.1", "librosa>=0.10"]
+markers = ["pyrekordbox>=0.4", "serato-tools>=4.0"]
 verify = ["librosa>=0.10"]
-stems = ["demucs>=4.0"]
+stems = ["audio-separator>=0.47"]
 sheets = ["openpyxl>=3.1"]
 dev = ["pytest>=7.0"]
 
@@ -36,3 +40,5 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = ["slow: needs model weights or generated media; run with -m slow"]
+addopts = "-m 'not slow'"

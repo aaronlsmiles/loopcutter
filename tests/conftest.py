@@ -23,3 +23,15 @@ def click_track(tmp_path):
     path = tmp_path / "click.wav"
     sf.write(str(path), np.column_stack([audio, audio]).astype("float32"), sr)
     return {"path": path, "sr": sr, "bpm": bpm}
+
+
+import sys
+
+
+@pytest.fixture(autouse=True)
+def _no_model_in_unit_tests(request, monkeypatch):
+    """Unit tests inject fake detectors; importing beat_this here is a bug."""
+    if request.node.get_closest_marker("slow"):
+        return
+    monkeypatch.setitem(sys.modules, "beat_this", None)
+    monkeypatch.setitem(sys.modules, "beat_this.inference", None)
