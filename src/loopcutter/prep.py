@@ -26,7 +26,7 @@ from .audio_io import read_audio
 from .naming import sanitise
 
 LOSSLESS_SUFFIXES = {".wav", ".aif", ".aiff", ".flac"}
-CONTAINER_SUFFIXES = {".m4a", ".mp4", ".caf"}      # lossless only when they hold ALAC
+CONTAINER_SUFFIXES = {".m4a", ".mp4"}              # lossless only when they hold ALAC
 SAME_TRACK_S = 0.25                                  # a lossless copy of a lossy file is this close in length
 AUDIO_SUFFIXES = {".wav", ".aif", ".aiff", ".flac", ".mp3", ".m4a", ".mp4", ".aac",
                   ".ogg", ".opus"}
@@ -64,9 +64,12 @@ def _codec(path) -> str | None:
     ffprobe = shutil.which("ffprobe")
     if not ffprobe:
         return None
-    run = subprocess.run([ffprobe, "-v", "error", "-select_streams", "a:0", "-show_entries",
-                          "stream=codec_name", "-of", "default=nw=1:nk=1", str(path)],
-                         capture_output=True, text=True)
+    try:
+        run = subprocess.run([ffprobe, "-v", "error", "-select_streams", "a:0", "-show_entries",
+                              "stream=codec_name", "-of", "default=nw=1:nk=1", str(path)],
+                             capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        return None
     return (run.stdout.strip() or None) if run.returncode == 0 else None
 
 
@@ -100,7 +103,8 @@ def choose_sources(sources, masters_dir) -> tuple[list[Path], list[tuple[Path, P
         kinds = [is_lossless(c) for c in candidates]
         if len(candidates) == 1:
             winners[key] = candidates[0]
-        elif kinds.count(True) == 1 and kinds.count(False) == len(kinds) - 1:
+        elif (kinds.count(True) == 1 and kinds.count(False) == len(kinds) - 1
+              and all(_same_length(c, candidates[kinds.index(True)]) for c in candidates)):
             winner = candidates[kinds.index(True)]
             winners[key] = winner
             skipped += [(c, winner) for c in candidates if c is not winner]
@@ -123,12 +127,19 @@ def source_seconds(path) -> float | None:
     ffprobe = shutil.which("ffprobe")
     if not ffprobe:
         return None
-    run = subprocess.run([ffprobe, "-v", "error", "-show_entries", "format=duration",
-                          "-of", "default=nw=1:nk=1", str(path)], capture_output=True, text=True)
     try:
+        run = subprocess.run([ffprobe, "-v", "error", "-show_entries", "format=duration",
+                              "-of", "default=nw=1:nk=1", str(path)], capture_output=True,
+                             text=True, timeout=60)
         return float(run.stdout.strip())
-    except ValueError:
+    except (subprocess.TimeoutExpired, ValueError):
         return None
+
+
+def _same_length(a, b) -> bool:
+    """Whether two files are plausibly one track: lengths within SAME_TRACK_S."""
+    seconds = source_seconds(b)
+    return seconds is not None and same_track(a, seconds)
 
 
 def same_track(source, master_seconds: float) -> bool:
@@ -138,7 +149,8 @@ def same_track(source, master_seconds: float) -> bool:
 
 
 def set_aside(master: Path, replaced_dir: Path) -> Path:
-    """Move a master out of the way before it's rebuilt, as <name>_<date>.aiff."""
+    """Keep a copy of a master before it's replaced, as <name>_<date>.aiff. A copy, not a
+    move: the master stays in place until its replacement is ready to swap in."""
     replaced_dir.mkdir(parents=True, exist_ok=True)
     stamp = date.today().isoformat()
     dest = replaced_dir / f"{master.name}_{stamp}{master.suffix}"
@@ -146,7 +158,7 @@ def set_aside(master: Path, replaced_dir: Path) -> Path:
     while dest.exists():
         dest = replaced_dir / f"{master.name}_{stamp}-{count}{master.suffix}"
         count += 1
-    shutil.move(str(master), str(dest))
+    shutil.copy2(master, dest)
     return dest
 
 

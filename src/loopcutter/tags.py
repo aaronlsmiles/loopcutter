@@ -85,8 +85,9 @@ def _basic_tags(source) -> dict[str, str]:
 
 
 def copy_all_tags(source, dest) -> None:
-    """Every ID3 frame of one AIFF or WAV onto another, over what's there. Used when a master
-    is rebuilt, so tags other apps wrote to it (a Mixed In Key key, say) survive."""
+    """Every ID3 frame of one AIFF or WAV onto another, over what's there, except DJ-app cue
+    data. Used when a master is rebuilt, so tags other apps wrote to it (a Mixed In Key key,
+    say) survive."""
     tags = _open(source).tags
     if not tags:
         return
@@ -94,8 +95,18 @@ def copy_all_tags(source, dest) -> None:
     if audio.tags is None:
         audio.add_tags()
     for frame in tags.values():
-        audio.tags.add(frame)
+        if not _app_data(frame):
+            audio.tags.add(frame)
     audio.save(v2_version=3)
+
+
+def _app_data(frame) -> bool:
+    """DJ-app cue and grid data (and a stale length), which belong to the old audio."""
+    if frame.FrameID == "GEOB":
+        return str(frame.desc).startswith("Serato")
+    if frame.FrameID == "PRIV":
+        return str(frame.owner).upper().startswith("TRAKTOR")
+    return frame.FrameID == "TLEN"
 
 
 def copy_basic_tags(source, dest) -> None:

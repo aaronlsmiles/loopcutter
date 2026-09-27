@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import csv
 import importlib.util
+import math
 import shutil
 import statistics
 import subprocess
@@ -101,6 +102,32 @@ def _known_id(records, track_id: str) -> str:
     return next((k for k in records if k.casefold() == track_id.casefold()), track_id)
 
 
+def _rebuild_master(source, earlier, master_file, ws, headroom, replaced_dir):
+    """Build the lossless master beside the masters, carry the old one's tags over, keep a copy
+    of the old one, then swap the new one in under the old name. Until the swap, nothing in
+    masters/ has changed, so an interrupted rebuild loses nothing. Returns the copy's path."""
+    from . import prep
+    from .tags import copy_all_tags, copy_basic_tags
+
+    building = ws.masters / ".building"
+    shutil.rmtree(building, ignore_errors=True)
+    try:
+        result = prep.prepare_master(source, building, rate=int(ws.setting("audio", "sample_rate", 48000)),
+                                     subtype=ws.setting("audio", "subtype", "PCM_24"), gain_db=-headroom)
+        copy_basic_tags(source, result.master)
+        aside = None
+        if master_file.exists():
+            copy_all_tags(master_file, result.master)
+            aside = prep.set_aside(master_file, replaced_dir)
+        result.master.replace(master_file)
+    finally:
+        shutil.rmtree(building, ignore_errors=True)
+    clip = f"  CLIPPED {result.clipped} sample(s)" if result.clipped else ""
+    gain = f"  {result.gain_db:+.1f} dB" if result.gain_db else ""
+    print(f"  {master_file.name}  {result.source_rate} -> {result.rate} Hz{gain}{clip}")
+    return aside
+
+
 def _cmd_prep(args) -> int:
     from .prep import (choose_sources, find_sources, is_lossless, master_path, prepare_master,
                        same_track, set_aside)
@@ -116,7 +143,7 @@ def _cmd_prep(args) -> int:
         headroom = float(ws.setting("audio", "headroom_db", 0.0))
     except (TypeError, ValueError):
         headroom = -1.0
-    if headroom < 0:
+    if not math.isfinite(headroom) or headroom < 0:
         print("error: [audio] headroom_db must be a number of dB to take off, 0 or more", file=sys.stderr)
         return 2
     try:
@@ -135,15 +162,38 @@ def _cmd_prep(args) -> int:
         track_id = _known_id(records, track_id_for(master_path(source, ws.masters)))
         earlier = records.get(track_id)
         moved_from = earlier is not None and Path(earlier.source).resolve() != source.resolve()
+        master_file = ws.masters / f"{track_id}.aiff"          # the name the row and your DJ app know
         if moved_from and is_lossless(earlier.source) and is_lossless(source) is False:
-            print(f"  KEPT {track_id}.aiff: built from the lossless {Path(earlier.source).name}; "
-                  f"the lossy {source.name} is ignored")
+            if master_file.exists():
+                print(f"  KEPT {master_file.name}: built from the lossless {Path(earlier.source).name}; "
+                      f"the lossy {source.name} is ignored")
+            else:
+                print(f"  KEPT {master_file.name}: its master is missing - run prep with "
+                      f"{earlier.source} to rebuild it; the lossy {source.name} is ignored")
             continue
         upgrade = (moved_from and is_lossless(source) is True and is_lossless(earlier.source) is False
                    and same_track(source, earlier.duration))
-        old_master = None
-        if upgrade and (ws.masters / f"{track_id}.aiff").exists():
-            old_master = set_aside(ws.masters / f"{track_id}.aiff", replaced_dir)
+        if moved_from and not upgrade and not master_file.exists():
+            print(f"  CHANGED {master_file.name}: tracks.csv has it from {earlier.source}; not built "
+                  "from this source - delete its tracks.csv row if this is the track you want")
+            continue
+        if upgrade:
+            made += 1
+            aside = _rebuild_master(source, earlier, master_file, ws, headroom, replaced_dir)
+            kept = f"; a copy of the old master is in {aside}" if aside else ""
+            print(f"  REBUILT {master_file.name}: from the lossless {source.name} "
+                  f"(was {Path(earlier.source).name}){kept}. Run `loopcutter scan` for it again, "
+                  "and re-analyse it in your DJ app: its cues were placed on the old audio")
+            info = _sf.info(str(master_file))
+            records[track_id] = TrackRecord(track_id=track_id, source=str(source.resolve()),
+                                            master=str(master_file), sample_rate=info.samplerate,
+                                            duration=info.frames / info.samplerate, bpm=0.0, phase=0.0,
+                                            bar_phase=0, override_bpm=earlier.override_bpm,
+                                            override_phase_ms=earlier.override_phase_ms)
+            if earlier.override_phase_ms is not None:
+                print(f"      check override_phase_ms for {track_id}: the new audio may start at a "
+                      "slightly different point")
+            continue
         result = prepare_master(source, ws.masters, rate=int(ws.setting("audio", "sample_rate", 48000)),
                                 subtype=ws.setting("audio", "subtype", "PCM_24"), gain_db=-headroom)
         if result.stale:
@@ -151,26 +201,11 @@ def _cmd_prep(args) -> int:
             print(f"  STALE {result.master.name}: its source changed; delete the master to rebuild it")
         if not result.reused:
             copy_basic_tags(source, result.master)
-            if old_master is not None:
-                copy_all_tags(old_master, result.master)
             made += 1
             clip = f"  CLIPPED {result.clipped} sample(s)" if result.clipped else ""
             gain = f"  {result.gain_db:+.1f} dB" if result.gain_db else ""
             print(f"  {result.master.name}  {result.source_rate} -> {result.rate} Hz{gain}{clip}")
-        if upgrade and not result.reused:
-            kept = f"; the old master is in {old_master}" if old_master else ""
-            print(f"  REBUILT {result.master.name}: from the lossless {source.name} "
-                  f"(was {Path(earlier.source).name}){kept}. Run `loopcutter scan` for it again, "
-                  "and re-analyse it in your DJ app: its cues were placed on the old audio")
-            records[track_id] = TrackRecord(track_id=track_id, source=str(source.resolve()),
-                                            master=str(result.master), sample_rate=result.rate,
-                                            duration=result.frames / result.rate, bpm=0.0, phase=0.0,
-                                            bar_phase=0, override_bpm=earlier.override_bpm,
-                                            override_phase_ms=earlier.override_phase_ms)
-            if earlier.override_phase_ms is not None:
-                print(f"      check override_phase_ms for {track_id}: the new audio may start at a "
-                      "slightly different point")
-        elif earlier is None:
+        if earlier is None:
             records[track_id] = TrackRecord(track_id=track_id, source=str(source.resolve()),
                                             master=str(result.master), sample_rate=result.rate,
                                             duration=result.frames / result.rate,

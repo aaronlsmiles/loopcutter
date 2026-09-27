@@ -103,6 +103,7 @@ def test_clashes_are_grouped_as_the_filesystem_sees_them(tmp_path):
 def test_an_m4a_is_lossless_only_if_it_holds_alac(tmp_path, monkeypatch):
     m4a, mp3 = tmp_path / "T.m4a", _tone(tmp_path / "T.mp3", fmt="MP3", subtype="MPEG_LAYER_III")
     m4a.write_bytes(b"")
+    monkeypatch.setattr(prep, "source_seconds", lambda path: 2.0)             # both copies 2 s long
     monkeypatch.setattr(prep, "_codec", lambda path: "alac")
     assert prep.is_lossless(m4a) is True
     assert choose_sources([mp3, m4a], tmp_path / "m") == ([m4a], [(mp3, m4a)])
@@ -112,3 +113,31 @@ def test_an_m4a_is_lossless_only_if_it_holds_alac(tmp_path, monkeypatch):
     assert prep.is_lossless(m4a) is None
     with pytest.raises(ValueError, match="T.aiff"):
         choose_sources([mp3, m4a], tmp_path / "m")
+
+
+def test_a_lossless_file_of_a_different_length_does_not_silently_win(tmp_path):
+    (tmp_path / "lossless").mkdir(); (tmp_path / "lossy").mkdir()
+    wav = _tone(tmp_path / "lossless" / "x.wav", seconds=5.0)
+    mp3 = _tone(tmp_path / "lossy" / "x.mp3", seconds=2.0, fmt="MP3", subtype="MPEG_LAYER_III")
+    with pytest.raises(ValueError, match="x.mp3"):
+        choose_sources([mp3, wav], tmp_path / "m")
+
+
+def test_copy_all_tags_leaves_dj_app_cue_data_behind(tmp_path):
+    from mutagen.aiff import AIFF
+    from mutagen.id3 import GEOB, PRIV, TKEY, TLEN
+
+    from loopcutter.tags import copy_all_tags, read_tag
+
+    old = _tone(tmp_path / "old.aiff", fmt="AIFF")
+    new = _tone(tmp_path / "new.aiff", fmt="AIFF")
+    f = AIFF(str(old)); f.add_tags()
+    f.tags.add(TKEY(encoding=3, text=["Am"]))
+    f.tags.add(GEOB(encoding=0, mime="application/octet-stream", filename="", desc="Serato Markers2", data=b"x"))
+    f.tags.add(PRIV(owner="TRAKTOR4", data=b"x"))
+    f.tags.add(TLEN(encoding=3, text=["1000"]))
+    f.save(v2_version=3)
+    copy_all_tags(old, new)
+    tags = AIFF(str(new)).tags
+    assert read_tag(new, "TKEY") == "Am"
+    assert not tags.getall("GEOB") and not tags.getall("PRIV") and not tags.getall("TLEN")
