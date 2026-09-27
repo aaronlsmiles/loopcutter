@@ -51,14 +51,23 @@ checks are in place, tested, and proven on a real library. See
 
 ## Install
 
-Needs Python 3.12 or later.
+Needs Python 3.12 or later. Install the `loopcutter` command with
+[pipx](https://pipx.pypa.io) (or `uv tool install`), choosing the extras you
+need:
+
+```bash
+pipx install "loopcutter[analysis,markers,verify]"
+loopcutter --help
+```
+
+To work on the code instead:
 
 ```bash
 git clone https://github.com/aaronlsmiles/loopcutter.git
 cd loopcutter
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev,analysis,markers]"
+pip install -e ".[dev,analysis,markers,verify]"
 pytest -q
 ```
 
@@ -128,7 +137,7 @@ directory to the folder holding `loopcutter.toml`.
    ```
 
 2. Mark loops in rekordbox (see [Marking loops in DJ software](#marking-loops-in-dj-software))
-   and import them, or write a manifest by hand. [manifests/example.csv](manifests/example.csv)
+   and import them, or write a manifest by hand. [manifests/example.csv](https://github.com/aaronlsmiles/loopcutter/blob/main/manifests/example.csv)
    shows the common columns.
 
 3. Check that every row resolves, then cut:
@@ -581,7 +590,7 @@ The code keeps a few rules:
 
 ## Licence
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/aaronlsmiles/loopcutter/blob/main/LICENSE).
 
 Loops cut from commercial releases are for your own practice and performance.
 Releasing anything built from them needs the rights holders' clearance.
