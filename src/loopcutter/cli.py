@@ -95,9 +95,16 @@ def _cmd_init(args) -> int:
     return 0
 
 
+def _known_id(records, track_id: str) -> str:
+    """The id tracks.csv already uses for this master, matched as a case-insensitive
+    filesystem would; else the given one."""
+    return next((k for k in records if k.casefold() == track_id.casefold()), track_id)
+
+
 def _cmd_prep(args) -> int:
-    from .prep import choose_sources, find_sources, is_lossless, master_path, prepare_master
-    from .tags import copy_basic_tags
+    from .prep import (choose_sources, find_sources, is_lossless, master_path, prepare_master,
+                       same_track, set_aside)
+    from .tags import copy_all_tags, copy_basic_tags
 
     ws = _workspace_or_exit()
     sources = find_sources(args.sources or ws.setting("sources", "paths", []))
@@ -106,47 +113,74 @@ def _cmd_prep(args) -> int:
               file=sys.stderr)
         return 2
     try:
+        headroom = float(ws.setting("audio", "headroom_db", 0.0))
+    except (TypeError, ValueError):
+        headroom = -1.0
+    if headroom < 0:
+        print("error: [audio] headroom_db must be a number of dB to take off, 0 or more", file=sys.stderr)
+        return 2
+    try:
         sources, skipped = choose_sources(sources, ws.masters)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     for lossy, lossless in skipped:
         print(f"  SKIP {lossy.name}: the lossless {lossless.name} makes this master")
+    replaced_dir = Path(ws.setting("prep", "replaced_dir", "masters/.replaced")).expanduser()
+    replaced_dir = replaced_dir if replaced_dir.is_absolute() else ws.root / replaced_dir
     records = load_tracks(ws.tracks_csv)
-    gain_db = -float(ws.setting("audio", "headroom_db", 0.0))
     made = stale = 0
     for source in sources:
-        track_id = track_id_for(master_path(source, ws.masters))
+        source = Path(source)
+        track_id = _known_id(records, track_id_for(master_path(source, ws.masters)))
         earlier = records.get(track_id)
-        upgrade = (earlier is not None and is_lossless(source) and not is_lossless(earlier.source)
-                   and (ws.masters / f"{track_id}.aiff").exists())
+        moved_from = earlier is not None and Path(earlier.source).resolve() != source.resolve()
+        if moved_from and is_lossless(earlier.source) and is_lossless(source) is False:
+            print(f"  KEPT {track_id}.aiff: built from the lossless {Path(earlier.source).name}; "
+                  f"the lossy {source.name} is ignored")
+            continue
+        upgrade = (moved_from and is_lossless(source) is True and is_lossless(earlier.source) is False
+                   and same_track(source, earlier.duration))
+        old_master = None
+        if upgrade and (ws.masters / f"{track_id}.aiff").exists():
+            old_master = set_aside(ws.masters / f"{track_id}.aiff", replaced_dir)
         result = prepare_master(source, ws.masters, rate=int(ws.setting("audio", "sample_rate", 48000)),
-                                subtype=ws.setting("audio", "subtype", "PCM_24"), gain_db=gain_db,
-                                replace=upgrade)
-        if upgrade:
-            print(f"  REBUILT {result.master.name}: from the lossless {Path(source).name} "
-                  f"(was {Path(earlier.source).name}); run `loopcutter scan` for it again")
-            del records[track_id]
+                                subtype=ws.setting("audio", "subtype", "PCM_24"), gain_db=-headroom)
         if result.stale:
             stale += 1
             print(f"  STALE {result.master.name}: its source changed; delete the master to rebuild it")
         if not result.reused:
             copy_basic_tags(source, result.master)
+            if old_master is not None:
+                copy_all_tags(old_master, result.master)
             made += 1
             clip = f"  CLIPPED {result.clipped} sample(s)" if result.clipped else ""
             gain = f"  {result.gain_db:+.1f} dB" if result.gain_db else ""
             print(f"  {result.master.name}  {result.source_rate} -> {result.rate} Hz{gain}{clip}")
-        track_id = track_id_for(result.master)
-        if track_id not in records:
-            records[track_id] = TrackRecord(track_id=track_id, source=str(Path(source).resolve()),
+        if upgrade and not result.reused:
+            kept = f"; the old master is in {old_master}" if old_master else ""
+            print(f"  REBUILT {result.master.name}: from the lossless {source.name} "
+                  f"(was {Path(earlier.source).name}){kept}. Run `loopcutter scan` for it again, "
+                  "and re-analyse it in your DJ app: its cues were placed on the old audio")
+            records[track_id] = TrackRecord(track_id=track_id, source=str(source.resolve()),
+                                            master=str(result.master), sample_rate=result.rate,
+                                            duration=result.frames / result.rate, bpm=0.0, phase=0.0,
+                                            bar_phase=0, override_bpm=earlier.override_bpm,
+                                            override_phase_ms=earlier.override_phase_ms)
+            if earlier.override_phase_ms is not None:
+                print(f"      check override_phase_ms for {track_id}: the new audio may start at a "
+                      "slightly different point")
+        elif earlier is None:
+            records[track_id] = TrackRecord(track_id=track_id, source=str(source.resolve()),
                                             master=str(result.master), sample_rate=result.rate,
                                             duration=result.frames / result.rate,
                                             bpm=0.0, phase=0.0, bar_phase=0)
-        elif Path(records[track_id].source).resolve() != Path(source).resolve():
-            print(f"  CHANGED {result.master.name}: built from {records[track_id].source}; "
-                  "delete the master and its tracks.csv row to rebuild it from this source")
+        elif moved_from:
+            print(f"  CHANGED {result.master.name}: built from {earlier.source}; delete the master "
+                  "and its tracks.csv row to rebuild it from this source")
     save_tracks(ws.tracks_csv, records)
-    print(f"{made} master(s) written, {len(sources) - made} already there ({stale} stale), in {ws.masters}")
+    print(f"{made} master(s) written, {len(sources) - made} already there or kept ({stale} stale), "
+          f"in {ws.masters}")
     return 0
 
 

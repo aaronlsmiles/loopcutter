@@ -84,6 +84,20 @@ def _basic_tags(source) -> dict[str, str]:
     return found
 
 
+def copy_all_tags(source, dest) -> None:
+    """Every ID3 frame of one AIFF or WAV onto another, over what's there. Used when a master
+    is rebuilt, so tags other apps wrote to it (a Mixed In Key key, say) survive."""
+    tags = _open(source).tags
+    if not tags:
+        return
+    audio = _open(dest)
+    if audio.tags is None:
+        audio.add_tags()
+    for frame in tags.values():
+        audio.tags.add(frame)
+    audio.save(v2_version=3)
+
+
 def copy_basic_tags(source, dest) -> None:
     """Carry artist, title, key and BPM (never DJ-app cue data) onto a master."""
     found = _basic_tags(source)

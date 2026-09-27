@@ -7,7 +7,8 @@ import pytest
 import soundfile as sf
 
 from loopcutter.audio_io import read_audio
-from loopcutter.prep import check_collisions, choose_sources, find_sources, master_path, prepare_master
+import loopcutter.prep as prep
+from loopcutter.prep import choose_sources, find_sources, master_path, prepare_master
 
 
 def _tone(path, sr=44100, seconds=2.0, amp=0.5, fmt=None, subtype=None):
@@ -50,7 +51,7 @@ def test_collisions_name_both_sources(tmp_path):
     (tmp_path / "a").mkdir(); (tmp_path / "b").mkdir()
     one, two = _tone(tmp_path / "a" / "x.wav"), _tone(tmp_path / "b" / "x.wav")
     with pytest.raises(ValueError, match="x.wav"):
-        check_collisions([one, two], tmp_path / "m")
+        choose_sources([one, two], tmp_path / "m")
 
 
 def test_find_sources_walks_folders_and_skips_hidden(tmp_path):
@@ -89,3 +90,25 @@ def test_headroom_keeps_overs_from_clipping(tmp_path):
     master, _ = sf.read(str(result.master))
     assert result.clipped == 0 and result.gain_db == -3.0
     assert 0.85 < np.max(np.abs(master)) < 1.0          # the resampled square overshoots ~1.27; -3 dB fits it
+
+
+def test_clashes_are_grouped_as_the_filesystem_sees_them(tmp_path):
+    (tmp_path / "a").mkdir(); (tmp_path / "b").mkdir()
+    mp3 = _tone(tmp_path / "a" / "Song.mp3", fmt="MP3", subtype="MPEG_LAYER_III")
+    wav = _tone(tmp_path / "b" / "song.wav")
+    assert choose_sources([mp3, wav], tmp_path / "m") == ([wav], [(mp3, wav)])
+    assert choose_sources([wav, wav, tmp_path / "b" / ".." / "b" / "song.wav"], tmp_path / "m") == ([wav], [])
+
+
+def test_an_m4a_is_lossless_only_if_it_holds_alac(tmp_path, monkeypatch):
+    m4a, mp3 = tmp_path / "T.m4a", _tone(tmp_path / "T.mp3", fmt="MP3", subtype="MPEG_LAYER_III")
+    m4a.write_bytes(b"")
+    monkeypatch.setattr(prep, "_codec", lambda path: "alac")
+    assert prep.is_lossless(m4a) is True
+    assert choose_sources([mp3, m4a], tmp_path / "m") == ([m4a], [(mp3, m4a)])
+    monkeypatch.setattr(prep, "_codec", lambda path: "aac")
+    assert prep.is_lossless(m4a) is False
+    monkeypatch.setattr(prep, "_codec", lambda path: None)
+    assert prep.is_lossless(m4a) is None
+    with pytest.raises(ValueError, match="T.aiff"):
+        choose_sources([mp3, m4a], tmp_path / "m")

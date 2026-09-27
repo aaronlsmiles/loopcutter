@@ -1,15 +1,21 @@
 """Working masters: decode once, resample once, write 24-bit AIFF at one rate.
 
 Every DJ app then reads identical PCM, so markers carry no decoder offset.
-Existing masters are never overwritten, because Mixed In Key or a DJ app may
-have written tags to them. A changed source is reported as stale; delete the
-master to rebuild it. Overs created by resampling are clipped and counted.
+Masters are never overwritten in place, because Mixed In Key or a DJ app may
+have written tags to them. The one exception is a master built from a lossy
+file when a lossless copy of the same track appears: the old master is moved
+aside and its tags carried over (see `cli`). A changed source is otherwise
+reported; delete the master to rebuild it. Headroom can be taken off first,
+and any sample still over full scale is clipped and counted.
 """
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -20,6 +26,8 @@ from .audio_io import read_audio
 from .naming import sanitise
 
 LOSSLESS_SUFFIXES = {".wav", ".aif", ".aiff", ".flac"}
+CONTAINER_SUFFIXES = {".m4a", ".mp4", ".caf"}      # lossless only when they hold ALAC
+SAME_TRACK_S = 0.25                                  # a lossless copy of a lossy file is this close in length
 AUDIO_SUFFIXES = {".wav", ".aif", ".aiff", ".flac", ".mp3", ".m4a", ".mp4", ".aac",
                   ".ogg", ".opus"}
 
@@ -52,44 +60,103 @@ def find_sources(paths) -> list[Path]:
     return found
 
 
-def is_lossless(path) -> bool:
-    return Path(path).suffix.lower() in LOSSLESS_SUFFIXES
+def _codec(path) -> str | None:
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return None
+    run = subprocess.run([ffprobe, "-v", "error", "-select_streams", "a:0", "-show_entries",
+                          "stream=codec_name", "-of", "default=nw=1:nk=1", str(path)],
+                         capture_output=True, text=True)
+    return (run.stdout.strip() or None) if run.returncode == 0 else None
+
+
+def is_lossless(path) -> bool | None:
+    """True or False, or None when it can't be told (an .m4a whose codec can't be read)."""
+    suffix = Path(path).suffix.lower()
+    if suffix in LOSSLESS_SUFFIXES:
+        return True
+    if suffix in CONTAINER_SUFFIXES:
+        codec = _codec(path)
+        return None if codec is None else codec == "alac"
+    return False
 
 
 def choose_sources(sources, masters_dir) -> tuple[list[Path], list[tuple[Path, Path]]]:
     """One source per master. A lossless file always wins over lossy copies of the same
-    track; returns the sources to use and (skipped, used instead) pairs. Any other clash
-    (two lossless files, or two lossy ones) needs a human and is refused."""
-    by_master = defaultdict(list)
+    track; returns the sources to use and (skipped, used instead) pairs. Masters are
+    grouped as a case-insensitive filesystem sees them, and a path given twice counts
+    once. Any other clash (two lossless files, two lossy ones, or a file whose kind
+    can't be told) needs a human and is refused."""
+    ordered, seen = [], set()
     for source in map(Path, sources):
-        by_master[master_path(source, masters_dir)].append(source)
+        if source.resolve() not in seen:
+            seen.add(source.resolve())
+            ordered.append(source)
+    by_master = defaultdict(list)
+    for source in ordered:
+        by_master[master_path(source, masters_dir).name.casefold()].append(source)
     winners, skipped, clashes = {}, [], {}
-    for master, candidates in by_master.items():
-        lossless = [s for s in candidates if is_lossless(s)]
-        if len(candidates) == 1 or len(lossless) == 1:
-            winner = candidates[0] if len(candidates) == 1 else lossless[0]
-            winners[master] = winner
-            skipped += [(s, winner) for s in candidates if s != winner]
+    for key, candidates in by_master.items():
+        kinds = [is_lossless(c) for c in candidates]
+        if len(candidates) == 1:
+            winners[key] = candidates[0]
+        elif kinds.count(True) == 1 and kinds.count(False) == len(kinds) - 1:
+            winner = candidates[kinds.index(True)]
+            winners[key] = winner
+            skipped += [(c, winner) for c in candidates if c is not winner]
         else:
-            clashes[master] = candidates
+            clashes[key] = candidates
     if clashes:
-        lines = [f"{m.name} <- " + ", ".join(str(s) for s in srcs) for m, srcs in clashes.items()]
+        lines = [f"{master_path(srcs[0], masters_dir).name} <- " + ", ".join(str(s) for s in srcs)
+                 for srcs in clashes.values()]
         raise ValueError("two sources would write the same master:\n  " + "\n  ".join(lines))
-    kept = [s for s in map(Path, sources) if winners.get(master_path(s, masters_dir)) == s]
+    kept = [s for s in ordered if winners[master_path(s, masters_dir).name.casefold()] is s]
     return kept, skipped
 
 
-def check_collisions(sources, masters_dir) -> None:
-    choose_sources(sources, masters_dir)
+def source_seconds(path) -> float | None:
+    try:
+        info = sf.info(str(path))
+        return info.frames / info.samplerate
+    except (RuntimeError, sf.LibsndfileError):
+        pass
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return None
+    run = subprocess.run([ffprobe, "-v", "error", "-show_entries", "format=duration",
+                          "-of", "default=nw=1:nk=1", str(path)], capture_output=True, text=True)
+    try:
+        return float(run.stdout.strip())
+    except ValueError:
+        return None
+
+
+def same_track(source, master_seconds: float) -> bool:
+    """Whether a source is plausibly the audio a master of this length was made from."""
+    seconds = source_seconds(source)
+    return seconds is not None and abs(seconds - master_seconds) <= SAME_TRACK_S
+
+
+def set_aside(master: Path, replaced_dir: Path) -> Path:
+    """Move a master out of the way before it's rebuilt, as <name>_<date>.aiff."""
+    replaced_dir.mkdir(parents=True, exist_ok=True)
+    stamp = date.today().isoformat()
+    dest = replaced_dir / f"{master.name}_{stamp}{master.suffix}"
+    count = 2
+    while dest.exists():
+        dest = replaced_dir / f"{master.name}_{stamp}-{count}{master.suffix}"
+        count += 1
+    shutil.move(str(master), str(dest))
+    return dest
 
 
 def prepare_master(source, masters_dir, rate: int = 48000, subtype: str = "PCM_24",
-                   gain_db: float = 0.0, replace: bool = False) -> PrepResult:
-    """`gain_db` (usually negative) is taken off before writing, so decoding and resampling
-    overs above full scale fit. `replace` rebuilds an existing master."""
+                   gain_db: float = 0.0) -> PrepResult:
+    """`gain_db` (usually negative) is applied before writing, so decoding and resampling
+    overs above full scale fit."""
     source = Path(source)
     dest = master_path(source, masters_dir)
-    if dest.exists() and not replace:
+    if dest.exists():
         info = sf.info(str(dest))
         return PrepResult(source, dest, None, info.samplerate, info.frames, reused=True,
                           stale=source.stat().st_mtime > dest.stat().st_mtime)

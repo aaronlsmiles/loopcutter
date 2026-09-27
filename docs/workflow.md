@@ -15,8 +15,9 @@ a time read off an MP3 in DJ software can be tens of milliseconds from the
 same moment in the audio this tool decodes. `loopcutter prep` decodes each
 source once and writes a 24-bit master at one working rate (48 kHz by
 default, the native rate of samplers such as Elektron's). Every app then reads
-identical samples. Masters are never overwritten, so tags your key or DJ
-software writes to them are safe.
+identical samples. Masters aren't overwritten, so tags your key or DJ
+software writes to them are safe; when a lossless copy replaces a lossy
+original, the old master is set aside and its tags carried over.
 
 **Never 32-bit float** for anything that goes near a CDJ.
 
