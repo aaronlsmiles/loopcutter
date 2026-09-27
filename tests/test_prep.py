@@ -136,8 +136,17 @@ def test_copy_all_tags_leaves_dj_app_cue_data_behind(tmp_path):
     f.tags.add(GEOB(encoding=0, mime="application/octet-stream", filename="", desc="Serato Markers2", data=b"x"))
     f.tags.add(PRIV(owner="TRAKTOR4", data=b"x"))
     f.tags.add(TLEN(encoding=3, text=["1000"]))
+    f.tags.add(GEOB(encoding=0, mime="image/png", filename="art.png", desc="artwork", data=b"y"))
     f.save(v2_version=3)
     copy_all_tags(old, new)
     tags = AIFF(str(new)).tags
     assert read_tag(new, "TKEY") == "Am"
-    assert not tags.getall("GEOB") and not tags.getall("PRIV") and not tags.getall("TLEN")
+    assert [g.desc for g in tags.getall("GEOB")] == ["artwork"]            # only Serato's go
+    assert not tags.getall("PRIV") and not tags.getall("TLEN")
+
+
+def test_find_sources_skips_anything_inside_a_hidden_folder(tmp_path):
+    _tone(tmp_path / "a.wav")
+    (tmp_path / ".replaced").mkdir()
+    _tone(tmp_path / ".replaced" / "old.wav")
+    assert [p.name for p in find_sources([tmp_path])] == ["a.wav"]

@@ -251,9 +251,10 @@ loopcutter prep [FILES OR FOLDERS ...]
 
 Decodes each source once, resamples it once, takes `headroom_db` off, and
 writes a 24-bit AIFF master, adding a row to `tracks.csv`. Folders are
-searched recursively. Masters are named after the source file, so a lossless
+searched recursively, skipping hidden folders and the workspace's own masters.
+Masters are named after the source file, so a lossless
 file and a lossy copy with the same name make the same master: the lossless
-file always wins, and the lossy one is skipped with a note (names are
+file wins, and the lossy one is skipped with a note (names are
 compared as a case-insensitive filesystem sees them, an `.m4a` counts as
 lossless only if it holds ALAC, and the two must be the same length to within
 0.25 s). A master already built from a lossy file is rebuilt when a lossless

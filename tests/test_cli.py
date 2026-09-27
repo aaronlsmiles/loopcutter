@@ -1,3 +1,4 @@
+import pathlib
 import numpy as np
 import pytest
 import soundfile as sf
@@ -382,6 +383,8 @@ def test_prep_rebuilds_a_lossy_master_from_a_lossless_copy_and_keeps_what_is_you
     assert record.override_phase_ms == 4.0 and "check override_phase_ms" in out
     assert read_tag(ws.masters / "Song.aiff", "TKEY") == "Am"                 # your key tag survives
     assert len(list((ws.masters / ".replaced").glob("Song.aiff_*.aiff"))) == 1   # the old master is kept
+    assert not list(ws.masters.glob(".building*"))
+    assert record.duration == pytest.approx(sf.info(str(ws.masters / "Song.aiff")).duration)
 
 
 def test_prep_never_rebuilds_a_different_track_that_shares_a_name(tmp_path, click_track, monkeypatch, capsys):
@@ -489,5 +492,39 @@ def test_a_non_finite_headroom_is_refused(tmp_path, click_track, monkeypatch):
     ws = init_workspace(tmp_path / "ws")
     monkeypatch.chdir(ws.root)
     config = (ws.root / "loopcutter.toml").read_text()
-    (ws.root / "loopcutter.toml").write_text(config.replace("headroom_db = 3.0", "headroom_db = nan"))
-    assert main(["prep", str(click_track["path"])]) == 2
+    for bad in ("nan", "inf"):
+        (ws.root / "loopcutter.toml").write_text(config.replace("headroom_db = 3.0", f"headroom_db = {bad}"))
+        assert main(["prep", str(click_track["path"])]) == 2
+
+
+def test_prep_never_takes_the_workspace_s_own_masters_as_sources(tmp_path, click_track, monkeypatch, capsys):
+    ws = init_workspace(tmp_path / "ws")
+    monkeypatch.chdir(ws.root)
+    mp3, wav = _two_copies(tmp_path, click_track)
+    assert main(["prep", str(mp3)]) == 0
+    before = (ws.masters / "Song.aiff").read_bytes()
+    assert main(["prep", str(ws.root)]) == 2                       # nothing but the workspace itself
+    assert (ws.masters / "Song.aiff").read_bytes() == before
+    assert load_tracks(ws.tracks_csv)["Song"].source.endswith("Song.mp3")
+
+
+def test_a_rebuild_is_saved_even_if_a_later_track_stops_the_run(tmp_path, click_track, monkeypatch):
+    import loopcutter.prep as prep
+
+    ws = init_workspace(tmp_path / "ws")
+    monkeypatch.chdir(ws.root)
+    mp3, wav = _two_copies(tmp_path, click_track)
+    assert main(["prep", str(mp3)]) == 0
+    audio, sr = sf.read(str(click_track["path"]), dtype="float32", always_2d=True)
+    sf.write(str(wav.parent / "Zed.wav"), audio, sr)
+    real = prep.prepare_master
+
+    def stop_on_zed(source, *args, **kwargs):
+        if pathlib.Path(source).name == "Zed.wav":
+            raise KeyboardInterrupt
+        return real(source, *args, **kwargs)
+    monkeypatch.setattr(prep, "prepare_master", stop_on_zed)
+    with pytest.raises(KeyboardInterrupt):
+        main(["prep", str(wav.parent)])
+    record = load_tracks(ws.tracks_csv)["Song"]
+    assert record.source.endswith("Song.wav") and record.bpm == 0.0

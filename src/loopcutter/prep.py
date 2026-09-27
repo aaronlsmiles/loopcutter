@@ -3,8 +3,8 @@
 Every DJ app then reads identical PCM, so markers carry no decoder offset.
 Masters are never overwritten in place, because Mixed In Key or a DJ app may
 have written tags to them. The one exception is a master built from a lossy
-file when a lossless copy of the same track appears: the old master is moved
-aside and its tags carried over (see `cli`). A changed source is otherwise
+file when a lossless copy of the same track appears: a copy of the old master
+is kept and its tags carried over (see `cli`). A changed source is otherwise
 reported; delete the master to rebuild it. Headroom can be taken off first,
 and any sample still over full scale is clipped and counted.
 """
@@ -54,7 +54,9 @@ def find_sources(paths) -> list[Path]:
     for item in (Path(p).expanduser() for p in paths):
         if item.is_dir():
             found.extend(sorted(p for p in item.rglob("*")
-                                if p.suffix.lower() in AUDIO_SUFFIXES and not p.name.startswith(".")))
+                                if p.suffix.lower() in AUDIO_SUFFIXES
+                                and not any(part.startswith(".") for part in p.relative_to(item).parts)
+                                and not p.name.endswith(".partial.aiff")))
         elif item.suffix.lower() in AUDIO_SUFFIXES and not item.name.startswith("."):
             found.append(item)
     return found

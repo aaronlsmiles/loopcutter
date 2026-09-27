@@ -19,6 +19,7 @@ import importlib.util
 import math
 import shutil
 import statistics
+import tempfile
 import subprocess
 import sys
 from collections import defaultdict
@@ -102,15 +103,14 @@ def _known_id(records, track_id: str) -> str:
     return next((k for k in records if k.casefold() == track_id.casefold()), track_id)
 
 
-def _rebuild_master(source, earlier, master_file, ws, headroom, replaced_dir):
+def _rebuild_master(source, master_file, ws, headroom, replaced_dir):
     """Build the lossless master beside the masters, carry the old one's tags over, keep a copy
     of the old one, then swap the new one in under the old name. Until the swap, nothing in
     masters/ has changed, so an interrupted rebuild loses nothing. Returns the copy's path."""
     from . import prep
     from .tags import copy_all_tags, copy_basic_tags
 
-    building = ws.masters / ".building"
-    shutil.rmtree(building, ignore_errors=True)
+    building = Path(tempfile.mkdtemp(dir=ws.masters, prefix=".building-"))
     try:
         result = prep.prepare_master(source, building, rate=int(ws.setting("audio", "sample_rate", 48000)),
                                      subtype=ws.setting("audio", "subtype", "PCM_24"), gain_db=-headroom)
@@ -129,15 +129,18 @@ def _rebuild_master(source, earlier, master_file, ws, headroom, replaced_dir):
 
 
 def _cmd_prep(args) -> int:
-    from .prep import (choose_sources, find_sources, is_lossless, master_path, prepare_master,
-                       same_track, set_aside)
-    from .tags import copy_all_tags, copy_basic_tags
+    from .prep import choose_sources, find_sources, is_lossless, master_path, prepare_master, same_track
+    from .tags import copy_basic_tags
 
     ws = _workspace_or_exit()
-    sources = find_sources(args.sources or ws.setting("sources", "paths", []))
+    replaced_dir = Path(ws.setting("prep", "replaced_dir", "masters/.replaced")).expanduser()
+    replaced_dir = replaced_dir if replaced_dir.is_absolute() else ws.root / replaced_dir
+    own = [ws.masters.resolve(), replaced_dir.resolve()]          # the workspace's masters are never sources
+    sources = [s for s in find_sources(args.sources or ws.setting("sources", "paths", []))
+               if not any(s.resolve().is_relative_to(d) for d in own)]
     if not sources:
-        print("no audio found - pass files or folders, or set [sources] paths in loopcutter.toml",
-              file=sys.stderr)
+        print("no audio found - pass files or folders, or set [sources] paths in loopcutter.toml "
+              "(the workspace's own masters are never sources)", file=sys.stderr)
         return 2
     try:
         headroom = float(ws.setting("audio", "headroom_db", 0.0))
@@ -153,10 +156,8 @@ def _cmd_prep(args) -> int:
         return 2
     for lossy, lossless in skipped:
         print(f"  SKIP {lossy.name}: the lossless {lossless.name} makes this master")
-    replaced_dir = Path(ws.setting("prep", "replaced_dir", "masters/.replaced")).expanduser()
-    replaced_dir = replaced_dir if replaced_dir.is_absolute() else ws.root / replaced_dir
     records = load_tracks(ws.tracks_csv)
-    made = stale = 0
+    made = stale = unbuilt = 0
     for source in sources:
         source = Path(source)
         track_id = _known_id(records, track_id_for(master_path(source, ws.masters)))
@@ -170,16 +171,18 @@ def _cmd_prep(args) -> int:
             else:
                 print(f"  KEPT {master_file.name}: its master is missing - run prep with "
                       f"{earlier.source} to rebuild it; the lossy {source.name} is ignored")
+                unbuilt += 1
             continue
         upgrade = (moved_from and is_lossless(source) is True and is_lossless(earlier.source) is False
                    and same_track(source, earlier.duration))
         if moved_from and not upgrade and not master_file.exists():
             print(f"  CHANGED {master_file.name}: tracks.csv has it from {earlier.source}; not built "
                   "from this source - delete its tracks.csv row if this is the track you want")
+            unbuilt += 1
             continue
         if upgrade:
             made += 1
-            aside = _rebuild_master(source, earlier, master_file, ws, headroom, replaced_dir)
+            aside = _rebuild_master(source, master_file, ws, headroom, replaced_dir)
             kept = f"; a copy of the old master is in {aside}" if aside else ""
             print(f"  REBUILT {master_file.name}: from the lossless {source.name} "
                   f"(was {Path(earlier.source).name}){kept}. Run `loopcutter scan` for it again, "
@@ -193,6 +196,7 @@ def _cmd_prep(args) -> int:
             if earlier.override_phase_ms is not None:
                 print(f"      check override_phase_ms for {track_id}: the new audio may start at a "
                       "slightly different point")
+            save_tracks(ws.tracks_csv, records)            # the master has changed; the row must follow now
             continue
         result = prepare_master(source, ws.masters, rate=int(ws.setting("audio", "sample_rate", 48000)),
                                 subtype=ws.setting("audio", "subtype", "PCM_24"), gain_db=-headroom)
@@ -214,8 +218,8 @@ def _cmd_prep(args) -> int:
             print(f"  CHANGED {result.master.name}: built from {earlier.source}; delete the master "
                   "and its tracks.csv row to rebuild it from this source")
     save_tracks(ws.tracks_csv, records)
-    print(f"{made} master(s) written, {len(sources) - made} already there or kept ({stale} stale), "
-          f"in {ws.masters}")
+    print(f"{made} master(s) written, {len(sources) - made - unbuilt} already there, {unbuilt} not built "
+          f"({stale} stale), in {ws.masters}")
     return 0
 
 
