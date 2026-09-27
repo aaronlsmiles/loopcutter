@@ -96,7 +96,7 @@ def _cmd_init(args) -> int:
 
 
 def _cmd_prep(args) -> int:
-    from .prep import check_collisions, find_sources, prepare_master
+    from .prep import choose_sources, find_sources, is_lossless, master_path, prepare_master
     from .tags import copy_basic_tags
 
     ws = _workspace_or_exit()
@@ -106,15 +106,27 @@ def _cmd_prep(args) -> int:
               file=sys.stderr)
         return 2
     try:
-        check_collisions(sources, ws.masters)
+        sources, skipped = choose_sources(sources, ws.masters)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    for lossy, lossless in skipped:
+        print(f"  SKIP {lossy.name}: the lossless {lossless.name} makes this master")
     records = load_tracks(ws.tracks_csv)
+    gain_db = -float(ws.setting("audio", "headroom_db", 0.0))
     made = stale = 0
     for source in sources:
+        track_id = track_id_for(master_path(source, ws.masters))
+        earlier = records.get(track_id)
+        upgrade = (earlier is not None and is_lossless(source) and not is_lossless(earlier.source)
+                   and (ws.masters / f"{track_id}.aiff").exists())
         result = prepare_master(source, ws.masters, rate=int(ws.setting("audio", "sample_rate", 48000)),
-                                subtype=ws.setting("audio", "subtype", "PCM_24"))
+                                subtype=ws.setting("audio", "subtype", "PCM_24"), gain_db=gain_db,
+                                replace=upgrade)
+        if upgrade:
+            print(f"  REBUILT {result.master.name}: from the lossless {Path(source).name} "
+                  f"(was {Path(earlier.source).name}); run `loopcutter scan` for it again")
+            del records[track_id]
         if result.stale:
             stale += 1
             print(f"  STALE {result.master.name}: its source changed; delete the master to rebuild it")
@@ -122,7 +134,8 @@ def _cmd_prep(args) -> int:
             copy_basic_tags(source, result.master)
             made += 1
             clip = f"  CLIPPED {result.clipped} sample(s)" if result.clipped else ""
-            print(f"  {result.master.name}  {result.source_rate} -> {result.rate} Hz{clip}")
+            gain = f"  {result.gain_db:+.1f} dB" if result.gain_db else ""
+            print(f"  {result.master.name}  {result.source_rate} -> {result.rate} Hz{gain}{clip}")
         track_id = track_id_for(result.master)
         if track_id not in records:
             records[track_id] = TrackRecord(track_id=track_id, source=str(Path(source).resolve()),

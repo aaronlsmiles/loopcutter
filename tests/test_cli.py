@@ -334,3 +334,32 @@ def test_a_zero_shift_limit_means_zero(tmp_path, click_track, monkeypatch):
     ws = _ws(tmp_path, click_track, monkeypatch)
     (ws.manifests / "s.csv").write_text("track_id,label,bars,start,snap\nArtist - Clicks,A1,4,15.03,beat\n")
     assert main(["resolve", "manifests/s.csv", "--max-shift-ms", "0"]) == 1
+
+
+def test_prep_prefers_lossless_and_rebuilds_a_master_made_from_a_lossy_copy(tmp_path, click_track, monkeypatch, capsys):
+    ws = init_workspace(tmp_path / "ws")
+    monkeypatch.chdir(ws.root)
+    audio, sr = sf.read(str(click_track["path"]), dtype="float32", always_2d=True)
+    (tmp_path / "lossy").mkdir(); (tmp_path / "lossless").mkdir()
+    sf.write(str(tmp_path / "lossy" / "Song.mp3"), audio, sr, format="MP3", subtype="MPEG_LAYER_III")
+    assert main(["prep", str(tmp_path / "lossy")]) == 0
+    records = load_tracks(ws.tracks_csv)
+    from dataclasses import replace
+    save_tracks(ws.tracks_csv, {"Song": replace(records["Song"], bpm=128.0, bpm_fitted=128.0)})
+    sf.write(str(tmp_path / "lossless" / "Song.wav"), audio, sr)
+    assert main(["prep", str(tmp_path / "lossless"), str(tmp_path / "lossy")]) == 0
+    out = capsys.readouterr().out
+    assert "SKIP Song.mp3" in out and "REBUILT Song.aiff" in out
+    record = load_tracks(ws.tracks_csv)["Song"]
+    assert record.source.endswith("Song.wav") and record.bpm == 0.0          # analysis reset for scan
+
+
+def test_prep_takes_the_workspace_headroom_off_every_master(tmp_path, click_track, monkeypatch):
+    ws = init_workspace(tmp_path / "ws")
+    monkeypatch.chdir(ws.root)
+    config = (ws.root / "loopcutter.toml").read_text()
+    (ws.root / "loopcutter.toml").write_text(config.replace("headroom_db = 3.0", "headroom_db = 6.0"))
+    assert main(["prep", str(click_track["path"])]) == 0
+    source, _ = sf.read(str(click_track["path"]))
+    master, _ = sf.read(str(ws.masters / "click.aiff"))
+    assert np.max(np.abs(master)) == pytest.approx(0.5 * np.max(np.abs(source)), rel=0.02)

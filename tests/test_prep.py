@@ -7,7 +7,7 @@ import pytest
 import soundfile as sf
 
 from loopcutter.audio_io import read_audio
-from loopcutter.prep import check_collisions, find_sources, master_path, prepare_master
+from loopcutter.prep import check_collisions, choose_sources, find_sources, master_path, prepare_master
 
 
 def _tone(path, sr=44100, seconds=2.0, amp=0.5, fmt=None, subtype=None):
@@ -68,3 +68,24 @@ def test_aac_decodes_through_ffmpeg(tmp_path):
                     "-ac", "2", "-c:a", "aac", str(m4a)], check=True)
     audio, sr = read_audio(m4a)
     assert audio.shape[1] == 2 and 0.9 * sr < len(audio) < 1.2 * sr
+
+
+def test_a_lossless_file_always_wins_over_a_lossy_copy(tmp_path):
+    (tmp_path / "lossless").mkdir(); (tmp_path / "lossy").mkdir()
+    wav = _tone(tmp_path / "lossless" / "x.wav")
+    mp3 = _tone(tmp_path / "lossy" / "x.mp3", fmt="MP3", subtype="MPEG_LAYER_III")
+    other = _tone(tmp_path / "lossy" / "y.mp3", fmt="MP3", subtype="MPEG_LAYER_III")
+    kept, skipped = choose_sources([mp3, other, wav], tmp_path / "m")
+    assert kept == [other, wav] and skipped == [(mp3, wav)]
+    with pytest.raises(ValueError, match="x.mp3"):                       # two lossy copies: no winner
+        choose_sources([mp3, _tone(tmp_path / "x.mp3", fmt="MP3", subtype="MPEG_LAYER_III")], tmp_path / "m")
+
+
+def test_headroom_keeps_overs_from_clipping(tmp_path):
+    sr = 44100
+    square = np.sign(np.sin(2 * np.pi * 1000 * np.arange(sr) / sr)).astype("float32")
+    sf.write(str(tmp_path / "sq.wav"), np.column_stack([square, square]), sr, subtype="FLOAT")
+    result = prepare_master(tmp_path / "sq.wav", tmp_path / "m", gain_db=-3.0)
+    master, _ = sf.read(str(result.master))
+    assert result.clipped == 0 and result.gain_db == -3.0
+    assert 0.85 < np.max(np.abs(master)) < 1.0          # the resampled square overshoots ~1.27; -3 dB fits it

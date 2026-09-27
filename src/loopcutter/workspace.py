@@ -21,6 +21,7 @@ DEFAULT_CONFIG = """\
 [audio]
 sample_rate = 48000     # rate of the working masters; a cut never resamples
 subtype = "PCM_24"
+headroom_db = 3.0       # taken off every master, so overs from decoding and resampling don't clip
 
 [sources]
 paths = []              # folders or files that `loopcutter prep` reads by default

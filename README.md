@@ -111,6 +111,7 @@ directory to the folder holding `loopcutter.toml`.
 |---|---|---|
 | `[audio] sample_rate` | `48000` | The rate of every master. A cut never resamples. |
 | `[audio] subtype` | `"PCM_24"` | The masters' sample format. |
+| `[audio] headroom_db` | `3.0` | Gain taken off every master, so overs from decoding and resampling loud sources fit instead of clipping. |
 | `[sources] paths` | `[]` | Folders or files that `prep` reads when given none. |
 | `[snap] max_shift_ms` | `60` | The furthest a start may be moved onto the grid. |
 | `[marking] app` | `"rekordbox"` | What `import` reads when `--from` isn't given: `rekordbox`, `rekordbox-xml` or `serato`. |
@@ -247,10 +248,16 @@ it again keeps your edits.
 loopcutter prep [FILES OR FOLDERS ...]
 ```
 
-Decodes each source once, resamples it once and writes a 24-bit AIFF master,
-adding a row to `tracks.csv`. Folders are searched recursively. Two sources
-that would make the same master are refused before anything is written.
-Samples pushed over full scale by resampling are clipped and counted.
+Decodes each source once, resamples it once, takes `headroom_db` off, and
+writes a 24-bit AIFF master, adding a row to `tracks.csv`. Folders are
+searched recursively. Masters are named after the source file, so a lossless
+file and a lossy copy with the same name make the same master: the lossless
+file always wins, and the lossy one is skipped with a note. A master already
+built from a lossy file is rebuilt when a lossless copy appears, and that
+track is left for `scan` to analyse again. Any other pair of sources that
+would make the same master is refused before anything is written. Loud MP3s
+decode above full scale; the headroom keeps those peaks, and any sample still
+over is clipped and counted.
 
 ### `scan`
 
