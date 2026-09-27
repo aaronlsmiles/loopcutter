@@ -26,7 +26,7 @@ def test_cut_and_verify_roundtrip(click_track, tmp_path):
             "label": "A1",
             "bars": "4",
             "bpm": str(click_track["bpm"]),
-            "start": "5.0",
+            "start": "5.15625",          # beat 11 at 128 BPM; loops must start on a beat
             "artist": "Test",
             "track": "Clicks",
         }],
@@ -136,7 +136,7 @@ def test_variations_tile_within_a_sample(click_track, tmp_path):
     """Variations must tile, allowing for unavoidable integer rounding.
 
     At 128 BPM / 44.1 kHz a bar is 82687.5 samples, so a 1-bar loop cannot
-    divide a 4-bar one exactly. One sample is the most that rounding can cost.
+    divide a 4-bar one exactly. Rounding each length once costs at most two samples here.
     """
     path = tmp_path / "halves.csv"
     path.write_text(
@@ -151,7 +151,7 @@ def test_variations_tile_within_a_sample(click_track, tmp_path):
 
 
 def test_tiling_is_exact_at_48k():
-    """48 kHz is the reason to prefer it: 128 BPM gives whole samples per bar."""
+    """At 128 BPM, 48 kHz gives whole samples per bar (other tempos tile at 44.1 kHz instead)."""
     from loopcutter.timing import loop_length_samples, tiling_error_samples
 
     assert loop_length_samples(1, 128, 48000) == 90000
@@ -169,3 +169,28 @@ def test_variations_reject_nonsense(click_track, tmp_path):
     )
     with pytest.raises(ManifestError, match="bar numbers"):
         load_manifest(path)
+
+
+def test_find_zero_crossing_direction_picks_which_side_wins():
+    """test_verify.py's roundtrip test can't tell which way the search looks, because
+    15.003 s already sits on a crossing. Pin the direction directly: with a crossing on
+    each side of centre, "backward" must return the earlier one and "both" the later one.
+    """
+    import numpy as np
+
+    from loopcutter.cut import _find_zero_crossing
+
+    centre = 10
+    mono = np.ones(21)
+    mono[centre - 5] = -1.0    # sign change lands the backward crossing at centre - 4
+    mono[centre + 2] = -1.0    # sign change lands the forward crossing at centre + 2
+
+    assert _find_zero_crossing(mono, centre, radius=5, direction="backward") == centre - 4
+    assert _find_zero_crossing(mono, centre, radius=5, direction="both") == centre + 2
+
+
+def test_plain_manifest_rows_have_no_track_or_snap(click_track, tmp_path):
+    path = tmp_path / "p.csv"
+    path.write_text(f"source,label,bars,bpm,start\n{click_track['path']},x,4,128,5.0\n")
+    spec = load_manifest(path)[0]
+    assert spec.snap == "" and spec.track_id is None

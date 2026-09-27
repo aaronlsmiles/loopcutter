@@ -35,13 +35,21 @@ class LoopSpec:
     notes: str = ""
     row_number: int = 0
     extra: dict[str, str] = field(default_factory=dict)
+    track_id: str | None = None
+    snap: str = ""
+    kind: str = "loop"
+    end_seconds: float | None = None
+    xfade_ms: float | None = None      # None: use the command line's --xfade-ms
 
     @property
     def slug(self) -> str:
         parts = [p for p in (self.artist, self.track) if p]
         stub = " - ".join(parts) if parts else self.source.stem
+        stem = f"[{self.stem}]" if self.stem else ""
+        if self.kind == "oneshot":
+            return f"{stub} [{self.label}][oneshot]{stem}"
         bars = int(self.bars) if float(self.bars).is_integer() else self.bars
-        return f"{stub} [{self.label}][{bars}bar]"
+        return f"{stub} [{self.label}][{bars}bar]{stem}"
 
 
 class ManifestError(ValueError):
@@ -120,6 +128,19 @@ def _parse_variations(row: dict[str, str], row_number: int) -> list[float]:
     return sorted(seen, reverse=True)
 
 
+def _xfade(row: dict[str, str], row_number: int) -> float | None:
+    raw = row.get("xfade_ms")
+    if raw in (None, ""):
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ManifestError(f"row {row_number}: xfade_ms must be a number, got {raw!r}") from None
+    if value < 0:
+        raise ManifestError(f"row {row_number}: xfade_ms can't be negative, got {value:g}")
+    return value
+
+
 def load_manifest(path: str | Path, audio_root: str | Path | None = None) -> list[LoopSpec]:
     """Load a manifest.
 
@@ -139,7 +160,7 @@ def load_manifest(path: str | Path, audio_root: str | Path | None = None) -> lis
 
         known = REQUIRED | START_BY_TIME | START_BY_BAR | {
             "beats_per_bar", "stem", "artist", "track", "key", "notes",
-            "variations",
+            "variations", "track_id", "snap", "kind", "end", "xfade_ms",
         }
 
         for offset, row in enumerate(reader, start=2):
@@ -150,6 +171,37 @@ def load_manifest(path: str | Path, audio_root: str | Path | None = None) -> lis
             if row.get("source", "").startswith("#"):
                 continue
 
+            kind = (row.get("kind") or "loop").lower()
+            if kind not in {"loop", "oneshot"}:
+                raise ManifestError(f"row {offset}: kind must be loop or oneshot, got {kind!r}")
+            if kind == "oneshot":
+                missing = [c for c in ("source", "label", "start", "end") if not row.get(c)]
+                if missing:
+                    raise ManifestError(f"row {offset}: a oneshot needs {missing}")
+                start, end = parse_position(row["start"]), parse_position(row["end"])
+                if start < 0:
+                    raise ManifestError(f"row {offset}: start can't be before the file")
+                if end <= start:
+                    raise ManifestError(f"row {offset}: end must be after start")
+                source = Path(row["source"])
+                specs.append(LoopSpec(
+                    source=source if source.is_absolute() else root / source, label=row["label"],
+                    bars=0.0, bpm=float(row.get("bpm") or 0), start_seconds=start,
+                    stem=(row.get("stem") or "").lower() or None, artist=row.get("artist") or None,
+                    track=row.get("track") or None, key=row.get("key") or None,
+                    notes=row.get("notes") or "", row_number=offset, kind="oneshot",
+                    end_seconds=end, track_id=row.get("track_id") or None))
+                continue
+
+            snap = (row.get("snap") or "").lower()
+            if snap in {"beat", "bar"}:
+                raise ManifestError(f"row {offset}: start not snapped yet - run "
+                                    f"`loopcutter resolve {path}`")
+            if snap:
+                raise ManifestError(f"row {offset}: snap must be beat, bar or empty, got {snap!r}")
+            if row.get("track_id") and not (row.get("bpm") and row.get("source")):
+                raise ManifestError(f"row {offset}: source or bpm missing - run "
+                                    f"`loopcutter resolve {path}` to fill them from tracks.csv")
             _require(row, offset)
             bpm = float(row["bpm"])
             beats_per_bar = int(row.get("beats_per_bar") or 4)
@@ -169,13 +221,16 @@ def load_manifest(path: str | Path, audio_root: str | Path | None = None) -> lis
                         bpm=bpm,
                         start_seconds=start,
                         beats_per_bar=beats_per_bar,
-                        stem=row.get("stem") or None,
+                        stem=(row.get("stem") or "").lower() or None,
                         artist=row.get("artist") or None,
                         track=row.get("track") or None,
                         key=row.get("key") or None,
                         notes=row.get("notes") or "",
                         row_number=offset,
                         extra={k: v for k, v in row.items() if k not in known and v},
+                        track_id=row.get("track_id") or None,
+                        snap=snap,
+                        xfade_ms=_xfade(row, offset),
                     )
                 )
 

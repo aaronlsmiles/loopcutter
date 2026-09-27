@@ -6,8 +6,8 @@ loopcutter is for live sets built from many short loops played at once, in the
 spirit of Richie Hawtin's DE9 mixes. When eight loops run together for a
 minute, a loop that is three samples too long drifts audibly. loopcutter
 derives every loop's length from its tempo and bar count and rounds once. It
-nudges the start onto a zero crossing and checks every file before it calls a
-run a success.
+finds each track's beat grid, puts every start on a beat, and checks every
+file before it calls a run a success.
 
 The manifest is the source of truth. Keep it in version control and every
 loop on disk can be rebuilt from one CSV file.
@@ -16,36 +16,49 @@ loop on disk can be rebuilt from one CSV file.
 
 - **Exact lengths.** `samples = round(bars × beats_per_bar × sample_rate × 60 / bpm)`,
   rounded once at the end, never taken from a second timecode.
-- **Click-free edges.** The start snaps to the nearest zero crossing within
-  2 ms. The end moves with it, so the length never changes. A 0.5 ms fade at
-  each edge catches whatever the snap missed.
+- **A beat grid per track.** `scan` fits a constant-tempo grid to the beats
+  that [beat_this](https://github.com/CPJKU/beat_this) detects, finds which
+  beat is the one, and moves the grid onto the audio's own attacks.
+- **Mark loops by ear.** Set memory loops in rekordbox (or cues and saved loops
+  in Serato) on a waveform, then `import` them. Each start is snapped onto the
+  grid after the DJ app's own timing offset is removed, and every shift is
+  reported.
+- **Click-free edges.** The start moves back to the nearest zero crossing
+  within 2 ms, never forward, so the attack is never clipped. The end moves
+  with it, so the length never changes.
 - **Roll variations.** One manifest row can produce 4, 2, 1 and ½-bar versions
   from the same start, ready to stack in a clip launcher for beat-division rolls.
-- **Verification.** Every file is checked for exact sample count, sample rate,
-  headroom, silence, DC offset and a head-to-tail seam match.
+- **Checks that can fail.** Every file is checked for exact length, sample
+  rate, headroom against its source, silence and DC offset. The loop's own
+  audio is checked for where its attacks sit against its beats, and its tempo
+  against the analysis.
+- **Tagged and filed.** AIFF loops carry BPM, key and stem tags (ID3v2.3) and
+  are filed by stem and tempo band, ready for a sample browser.
+- **Stems and one-shots.** `stems` separates a master into drums, bass,
+  vocals and more at the master's own rate, and stem rows are cut from them.
+  One-shot rows cut a phrase or stab from a start to an end.
+- **Seamless tonal loops.** An optional pre-roll crossfade blends a loop's
+  tail into the audio just before its start, so a pad wraps without a dip.
 - **Session key planning.** From a list of keys, works out which one to three
   session keys cover the most loops within a transposition limit, and the
   exact shift each loop needs.
-- **Stems (optional).** A Demucs pre-pass, so one window of a track can give
-  separate drum, bass and melodic loops.
 
 ## Status
 
-Version 0.1. It works, and its 38 tests pass. It trusts the start times and
-tempo you give it: it doesn't find the beat itself yet. Read
-[Getting the start right](#getting-the-start-right) before cutting a large
-batch, and see [Known issues](#known-issues) and [Roadmap](#roadmap).
+Version 0.2, in development. The beat grid, the DJ-app import, stems,
+one-shots and the checks are in place and tested. See [Roadmap](#roadmap) and
+[Known issues](#known-issues).
 
 ## Install
 
-Needs Python 3.10 or later.
+Needs Python 3.12 or later.
 
 ```bash
 git clone https://github.com/aaronlsmiles/loopcutter.git
 cd loopcutter
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev,analysis,markers]"
 pytest -q
 ```
 
@@ -53,40 +66,80 @@ Optional extras:
 
 | Extra | Adds | For |
 |---|---|---|
-| `verify` | librosa | the `--check-bpm` tempo cross-check |
+| `analysis` | beat_this, librosa | `scan`: beat grids, attack phase |
+| `markers` | pyrekordbox, serato-tools | `import` and the DJ-app grid cross-check |
+| `verify` | librosa | the `beat_alignment` and measured-tempo checks in `cut` |
 | `sheets` | openpyxl | reading XLSX key lists |
-| `stems` | Demucs | the stem-separation pre-pass |
+| `stems` | audio-separator, onnxruntime, audioread | the `stems` command |
+
+beat_this runs on PyTorch and uses the Apple GPU when there is one; its model
+weights download on first use.
+
+Audio is read with libsndfile, which handles WAV, AIFF, FLAC and MP3. `prep`
+reads AAC, M4A and anything else through [ffmpeg](https://ffmpeg.org/), so
+install it if your sources include those. Key cross-checks use
+[keyfinder-cli](https://github.com/EvanPurkhiser/keyfinder-cli) when it is on
+your `PATH`.
+
+## Workspace
+
+Your masters, analysis and loops are private working data, so they live in a
+workspace outside this repository:
 
 ```bash
-pip install -e ".[dev,verify,sheets]"
+loopcutter init ~/loops-workspace
+cd ~/loops-workspace
 ```
 
-Audio is read with libsndfile, which ships inside the `soundfile` package and
-handles WAV, AIFF, FLAC and MP3. AAC and M4A files aren't supported, so
-convert them first, for example `ffmpeg -i in.m4a out.wav`.
+`init` refuses to create a workspace inside a git repository that has a
+remote, so private audio can't end up pushed by accident. Every command finds
+the workspace the way git finds a repository, by walking up from the current
+directory to the folder holding `loopcutter.toml`.
+
+| Folder | Holds |
+|---|---|
+| `masters/` | Lossless working copies, one per source, all at one rate. |
+| `analysis/` | `tracks.csv` (one row per track) and `beats/`, the cached beats. |
+| `manifests/` | Your manifests. |
+| `reports/` | Scan reports and manifest backups. |
+| `loops/aiff/`, `loops/wav/` | Cut loops, filed as `<stem>/<tempo band>/`. |
+| `stems/` | Separated stems. |
+
+`loopcutter.toml` settings:
+
+| Key | Default | What it does |
+|---|---|---|
+| `[audio] sample_rate` | `48000` | The rate of every master. A cut never resamples. |
+| `[audio] subtype` | `"PCM_24"` | The masters' sample format. |
+| `[sources] paths` | `[]` | Folders or files that `prep` reads when given none. |
+| `[snap] max_shift_ms` | `60` | The furthest a start may be moved onto the grid. |
+| `[marking] app` | `"rekordbox"` | What `import` reads when `--from` isn't given: `rekordbox`, `rekordbox-xml` or `serato`. |
+| `[marking] playlist` | `""` | The rekordbox playlist that holds your masters. |
 
 ## Quick start
 
-1. Write a manifest, one row per loop. [manifests/example.csv](manifests/example.csv)
-   shows every column.
-
-   ```csv
-   source,label,artist,track,bars,bpm,start,variations,key
-   audio/track.aiff,A1,Some Artist,Some Track,4,128,1:04.187,"2,1,0.5",Am
-   audio/track.aiff,A2,Some Artist,Some Track,2,128,2:11.500,,Am
-   ```
-
-2. Check that every row resolves, then cut:
+1. Make masters and analyse them:
 
    ```bash
-   loopcutter cut manifests/session.csv --out loops --dry-run
-   loopcutter cut manifests/session.csv --out loops
+   loopcutter prep ~/Music/sources
+   loopcutter scan
    ```
 
-3. Spot-check an output. The bar count must come back whole:
+2. Mark loops in rekordbox (see [Marking loops in DJ software](#marking-loops-in-dj-software))
+   and import them, or write a manifest by hand. [manifests/example.csv](manifests/example.csv)
+   shows the common columns.
+
+3. Check that every row resolves, then cut:
 
    ```bash
-   loopcutter inspect "loops/Some Artist - Some Track [A1][128][4bar][Am].aiff" --bpm 128
+   loopcutter cut manifests/session.csv --dry-run
+   loopcutter cut manifests/session.csv
+   ```
+
+4. Spot-check an output. The bar count must come back whole:
+
+   ```bash
+   loopcutter inspect "loops/aiff/full/125-129/Some Artist - Some Track [A1][128][4bar][8A].aiff" --bpm 128
    #   at 128.0 BPM that is 16.0000 beats (4.0000 bars)
    ```
 
@@ -101,62 +154,181 @@ wasted a lot of time that three rows would have saved.
 
 | Column | Required | Notes |
 |---|---|---|
-| `source` | yes | Path to the full track. |
+| `source` | yes | Path to the full track, normally its master. |
 | `label` | yes | Your cue or ID reference, such as `A1` or `16.2`. |
 | `bars` | yes | Loop length in bars. |
-| `bpm` | yes | The track's tempo. Use the analysed value to two decimal places. |
+| `bpm` | yes | The track's tempo. |
 | `start` | one of | `M:SS.mmm`, `H:MM:SS.mmm` or bare seconds. |
 | `downbeat` + `start_bar` | one of | A precise downbeat time plus a 1-based bar number counted from it. |
+| `kind` | no | `loop` (the default) or `oneshot`. |
+| `end` | one-shots | Where a one-shot ends. A one-shot needs `source`, `label`, `start` and `end`, not `bars` or `bpm`. |
+| `xfade_ms` | no | Pre-roll crossfade length for this loop; overrides `--xfade-ms`. |
+| `track_id` | no | The track's row in `tracks.csv`. `resolve` fills `source`, `bpm` and `key` from it. |
+| `snap` | no | `beat` or `bar` asks `resolve` to move `start` onto the grid. Must be empty before `cut`. |
 | `variations` | no | Extra bar lengths from the same start, such as `"2,1,0.5"`. |
 | `beats_per_bar` | no | Defaults to 4. |
 | `artist`, `track` | no | Used to build the output filename. |
-| `stem` | no | A tag for the filename. Run separation separately. |
-| `key` | no | Written into the filename, and read by the key planner. |
+| `stem` | no | Written into the filename and the tags, and picks the library folder. |
+| `key` | no | Written into the filename and the tags, and read by the key planner. |
 | `notes` | no | Ignored by the tool. For you. |
 
 Give either `start` or `downbeat` plus `start_bar`, never both. The loader
-rejects rows that give both, rows with no start, and manifests whose rows
-would produce the same filename, and it names the row number every time.
-Relative `source` paths resolve against the current directory. Use
-`--audio-root` to point somewhere else.
+rejects rows that give both, rows with no start, rows that still say
+`snap=beat` or `snap=bar`, and manifests whose rows would produce the same
+filename, and it names the row number every time. Relative `source` paths
+resolve against the current directory. Use `--audio-root` to point somewhere
+else.
+
+For rows you type by hand, give a `track_id`, a rough `start` and
+`snap=beat`, then run `loopcutter resolve manifests/set.csv`. It backs the
+manifest up to `reports/`, fills the missing columns from `tracks.csv`, snaps
+each start and reports how far it moved. A start further than `max_shift_ms`
+from the nearest beat is refused, and the row is named along with the beats
+and bar either side of it.
 
 ## Getting the start right
 
-loopcutter cuts exactly where you tell it to. The zero-crossing snap moves a
-start by 2 ms at most. That prevents clicks, but it can't rescue a start that
-is off the beat.
+`cut` cuts exactly where the manifest says. It never moves a start by more
+than the 2 ms zero-crossing search, and it never runs a model. Placement
+happens earlier, in `import` and `resolve`, where every move is reported.
 
+- **Mark on the master.** DJ apps decode MP3s with different padding, so a cue
+  read off an MP3 can sit tens of milliseconds from the same moment in the
+  audio this tool decodes. Marking on the lossless masters that `prep` makes
+  removes that offset. For marks made on the original files, `scan --app`
+  measures the app's offset per track and `import` removes it.
 - **Give milliseconds.** A time typed to the whole second lands anywhere up to
   half a second from the downbeat, which at 125 BPM is the wrong beat about
   half the time.
-- **Prefer the grid form.** Read one downbeat precisely from a zoomed waveform,
-  then address each loop by bar: `downbeat` `0:12.041`, `start_bar` `33`.
 - **Get the tempo exact.** A 4-bar loop cut at 134 BPM from a 136 BPM track is
-  105 ms too long on every repeat. Integer tempos are usually right for
-  machine-made tracks. Check the grid by ear on anything played live or taken
-  from vinyl.
-- **Cut from lossless files.** MP3s begin with encoder padding that programs
-  handle differently. A time read off an MP3 in DJ software can be tens of
-  milliseconds from the same moment in the audio this tool decodes. Cut from
-  WAV, AIFF or FLAC, and read your times from the same file you cut.
+  105 ms too long on every repeat. `scan` measures each track's tempo; the
+  `bpm_match` check catches a manifest that disagrees.
+
+## Marking loops in DJ software
+
+1. **`loopcutter prep`** makes 24-bit masters at the workspace rate from your
+   sources. Existing masters are never overwritten, because Mixed In Key or a
+   DJ app may have written tags to them. A changed source is reported instead;
+   delete the master to rebuild it.
+2. **Import the masters into rekordbox** as one playlist, name it in
+   `loopcutter.toml` under `[marking] playlist`, and fix any grid whose first
+   beat is wrong.
+3. **Mark memory loops** with quantise on. Hot cues are ignored, so they stay
+   free for performing. Comment each loop with its label, then its stem, then
+   any roll lengths: `A1 bass 2,1` is loop A1, cut from the bass stem, with
+   extra 2 and 1-bar versions. A memory cue with no loop gets the default
+   length of 4 bars. Close rekordbox before importing.
+4. **`loopcutter scan --app rekordbox`** analyses each master and compares the
+   grid with rekordbox's.
+5. **`loopcutter import --from rekordbox --playlist NAME`** reads the marks,
+   snaps them and writes a resolved manifest to `manifests/`, reporting the
+   median and range of the moves. Serato users run `import --from serato`;
+   `--from rekordbox-xml --xml FILE` reads a rekordbox XML export instead of
+   the database. Marks that can't be placed are skipped and named, and the
+   command exits 1 so they can't be missed.
+6. **Review the manifest.** Every row's `notes` say where the mark was and how
+   far it moved.
+7. **`loopcutter cut`** the manifest.
 
 ## Commands
+
+### `init`
+
+```bash
+loopcutter init [DIR]
+```
+
+Creates a workspace with its folders and a default `loopcutter.toml`. Running
+it again keeps your edits.
+
+### `prep`
+
+```bash
+loopcutter prep [FILES OR FOLDERS ...]
+```
+
+Decodes each source once, resamples it once and writes a 24-bit AIFF master,
+adding a row to `tracks.csv`. Folders are searched recursively. Two sources
+that would make the same master are refused before anything is written.
+Samples pushed over full scale by resampling are clipped and counted.
+
+### `scan`
+
+```bash
+loopcutter scan [TRACK_ID ...] [--app serato|rekordbox] [--force]
+```
+
+Analyses each master once: tempo, bar phase, attack phase, key, and with
+`--app` the DJ app's tempo and offset. It writes them to `tracks.csv` with a
+flag for anything doubtful:
+
+| Flag | Means |
+|---|---|
+| `grid-fit` | Under 90% of the detected beats fit one steady grid: a tempo change, a long break or a swung rhythm. Snapping uses the whole-track grid wherever it still fits the beats around a mark, and a local grid only where one fits clearly better (a real tempo change). |
+| `bar-phase` | The downbeats disagree about which beat is the one. |
+| `phase` | The attacks don't agree on where the beat sits. Only rekordbox marks made on the master are kept as they are. |
+| `key` | The key tag and keyfinder disagree. |
+| `app-bpm` | The DJ app's tempo differs by more than 0.05 BPM. |
+| `half-beat` | The DJ app's grid sits half a beat from ours. |
+| `app-offset` | On a lossless file, the app's grid sits more than 20 ms from ours. |
+
+`override_bpm` and `override_phase_ms` in `tracks.csv` are yours: `scan` never
+touches them, and snapping uses them when set. Tracks already analysed are
+skipped unless you pass `--force`. A report of each run goes in `reports/`.
+
+### `import`
+
+```bash
+loopcutter import [--from rekordbox|rekordbox-xml|serato] [FILES ...] [--playlist NAME] [--xml FILE] [--out FILE] [--max-shift-ms N]
+```
+
+Turns marked loops into a resolved manifest. `--from` defaults to `[marking]
+app`. An existing file is never overwritten.
+
+### `resolve`
+
+```bash
+loopcutter resolve MANIFEST [--max-shift-ms N]
+```
+
+Fills rows from `tracks.csv` and snaps starts marked `snap=beat` or
+`snap=bar`, after backing the manifest up.
+
+### `stems`
+
+```bash
+loopcutter stems TRACK_ID ... [--engine audio-separator|demucs] [--model NAME]
+```
+
+Separates each master with [audio-separator](https://github.com/nomadkaraoke/python-audio-separator)
+(Demucs `htdemucs_6s` by default: drums, bass, vocals, guitar, piano and
+other), or with the Demucs command line as a fallback. Separators work at
+44.1 kHz, so each stem is resampled to the master's rate and written to
+`stems/<track_id>/<stem>.aiff`, and the stems' sum is proven to line up with
+the master to the sample before any loop is cut from them. Raw output is
+cached, so a second run is instant.
 
 ### `cut`
 
 ```bash
-loopcutter cut MANIFEST [--out DIR] [options]
+loopcutter cut MANIFEST [options]
 ```
 
 | Option | Default | What it does |
 |---|---|---|
-| `--out DIR` | `loops` | Output directory. |
+| `--out DIR` | `loops/<format>` in a workspace, else `loops` | Output directory. |
+| `--layout` | `library` in a workspace, else `flat` | `library` files loops as `<stem>/<tempo band>/`. |
+| `--tag`, `--no-tag` | on for AIFF in a workspace | Writes BPM, key and stem tags. |
+| `--tracks FILE` | the workspace's `tracks.csv` | Analysis used for the tempo check. |
 | `--audio-root DIR` | current directory | Base for relative `source` paths. |
 | `--format` | `aiff` | `aiff`, `wav` or `flac`. |
 | `--subtype` | `PCM_24` | Any libsndfile subtype. |
-| `--snap-ms` | `2.0` | Zero-crossing search radius. |
+| `--snap-ms` | `2.0` | Zero-crossing search radius (backwards only). |
 | `--fade-ms` | `0.5` | Edge fade length. |
-| `--check-bpm` | off | Adds a librosa tempo cross-check (slower). |
+| `--trim-db` | `0.0` | Gain for every loop, for example `-1.0`. |
+| `--xfade-ms` | `0.0` | Crossfades each loop's tail into the audio before its start (a row's `xfade_ms` wins). |
+| `--check-bpm` | off | Measures the tempo from the audio. Automatic for analysed tracks. |
+| `--lenient` | off | Reports `beat_alignment` failures as warnings, for unsteady material. |
 | `--dry-run` | off | Resolves every row without writing audio. |
 
 32-bit float isn't the default because many CDJs won't play it.
@@ -177,13 +349,28 @@ See [Session key planning](#session-key-planning).
 ## Output files
 
 Files are named `Artist - Track [label][bpm][bars][key][stem].aiff`, for
-example `Some Artist - Some Track [A1][128][4bar][Am].aiff`. The brackets make
-a library easy to sort and search in any browser.
+example `Some Artist - Some Track [A1][128][4bar][8A][bass].aiff`. The brackets
+make a library easy to sort and search in any browser. In a workspace they are
+filed by stem and tempo band, such as `loops/aiff/bass/125-129/`; loops without
+a stem go under `full/`, and one-shots under `<stem>/oneshots/`, named
+`Artist - Track [label][oneshot].aiff`.
 
-Your DAW takes tempo from the audio, not the name. Ableton Live assumes a clip
-is 1, 2, 4, 8 or 16 bars long and sets its tempo from the length, so loops of
-those lengths land on tempo because the lengths are exact. Set other lengths,
-such as ½-bar rolls or 3-bar loops, by hand.
+A row that names a `stem` and a `track_id` is cut from that track's separated
+stem, while its timing is still checked on the full mix, where the attacks
+are. `cut` names any stem that hasn't been separated yet. A `stem` row without
+a `track_id` is cut from its `source` as given, with a note, so point `source`
+at the stem file if you separated it yourself.
+
+AIFF loops are tagged with BPM, key, stem (as the grouping), title, artist and
+a comment holding the Camelot key and label. WAV loops are left untagged by
+default, because some hardware samplers reject the tag chunk; pass `--tag` to
+tag them anyway.
+
+Ableton Live doesn't read the BPM in a filename. It assumes a clip is 1, 2, 4,
+8 or 16 bars long and sets the clip's tempo from its length, so loops of those
+lengths land on tempo because the lengths are exact. For any other length,
+such as ½-bar rolls or 3-bar loops, `cut` prints a note: set that clip's tempo
+by hand.
 
 To make two copies of the same cuts, run the manifest twice: once as AIFF for
 your DAW, and once with `--format wav` for a hardware sampler.
@@ -199,38 +386,59 @@ locked. Each one is a real file cut to an exact sample count.
 ### Sample rates and tiling
 
 Sample counts are whole numbers, so a sub-bar variation doesn't always divide
-its parent exactly. Whether it does depends on tempo and sample rate:
+its parent exactly. Whether it does depends on the tempo as well as the rate:
 
 | Rate | Common tempos where half bars tile exactly |
 |---|---|
-| 48 kHz | 120, 125, 128, 144, 150 BPM |
-| 44.1 kHz | 120, 125, 126, 135, 140, 144, 150 BPM |
+| 48 kHz | 120, 125, 128, 144, 150, 160 BPM |
+| 44.1 kHz | 120, 125, 126, 135, 140, 144, 147, 150, 160 BPM |
 
-At other tempos a variation drifts by 1 to 3 samples per cycle, under 0.07 ms.
-The tool reports it for each variation set. DAWs that warp clips re-sync them
-every cycle anyway. loopcutter never resamples, so pick a working rate and
-convert your sources before cutting.
+Neither rate is always better. At other tempos a variation drifts by a few
+samples per cycle: up to 4 for a half bar against 4 bars, and up to 8 against
+8 or 16 bars, under 0.2 ms. `cut` reports each drifting variation set
+and, when the other rate would be exact, names it. DAWs that warp clips
+re-sync them every cycle anyway. loopcutter never resamples at cut time, so
+the rate is chosen once, when `prep` makes the masters.
 
 ## Verification
 
-Every output is checked before a run reports success:
+An agent can't hear the output, and neither can a batch run, so every file is
+checked before a run reports success. Every check has a test proving it can
+fail.
 
-- exact sample count;
-- sample rate matches the source;
-- peak headroom;
-- not silent;
-- DC offset;
-- seam continuity, which compares the spectrum of the first and last 20 ms.
+- **`sample_count`, `sample_rate`:** the file is exactly the declared length at
+  the source's rate.
+- **`peak_headroom`:** the loop is no louder than its source, after any
+  `--trim-db`. A master that already peaks at full scale passes; a trim that
+  would push a loop past full scale fails.
+- **`not_silent`, `dc_offset`.**
+- **`beat_alignment`:** finds the strongest attack within 60 ms of each of the
+  loop's beats, in the source around the loop (the full mix, for a stem).
+  - *Placement* is where those attacks sit. It passes from −3 to +8 ms, warns
+    out to −10 or +15 ms, and fails beyond. An attack before the start means
+    the start cuts into it.
+  - *Drift* is how the attacks move from the loop's first beat to its last,
+    which is what a wrong tempo looks like. It warns above 4 ms and fails
+    above 10 ms.
+  - When under half the beats share a steady attack (breaks, pads, swung
+    material), it reports *not judged* rather than guessing.
+  - `--lenient` turns its failures into warnings.
+- One-shots have no beats to align and no tempo to match, so they get the
+  length, rate, headroom, silence and DC checks only.
+- **`bpm_match`:** how far the loop's end lands from where the next bar
+  begins. Against the tempo `scan` proposed it fails above 2 ms. On a
+  `grid-fit` track, and with `--check-bpm` on an unanalysed one, it measures
+  the tempo from the audio instead and fails above 5 ms; on a `grid-fit`
+  track a half- or double-time tempo fails outright.
 
-`--check-bpm` adds a librosa tempo estimate that allows for half- and
-double-time detection. A failed check names the file and the reason, and the
-run exits with an error.
+A failed check names the file and the reason, and the run exits with an error.
 
 ## Session key planning
 
 Key detection is unreliable on short loops. Analyse the full source tracks
-instead, in Mixed In Key or your DJ software, and carry each key into the
-manifest's `key` column. Every slice inherits its parent's key.
+instead: `scan` reads the key your DJ software or Mixed In Key wrote to each
+master, cross-checks it with keyfinder-cli, and carries it into the manifest's
+`key` column. Every slice inherits its parent's key.
 
 Then work out what to build the set around:
 
@@ -268,58 +476,73 @@ is built far more than a few percent of coverage does. The best session key
 is often not the most common one: a key between two clusters can reach more
 material than the biggest cluster.
 
-## Stems
+## Stems and seamless loops
 
-```python
-from loopcutter.stems import separate
+One 4-bar window across six stems gives six loops you can EQ and launch apart:
+run `loopcutter stems "<track_id>"` for the track, then give the rows a
+`stem`. Comment a rekordbox memory loop `A1 bass` and `import` fills it in.
 
-stems = separate("audio/track.aiff", "stems/")   # {"drums": Path, "bass": Path, ...}
-```
-
-This calls Demucs (`htdemucs_6s` by default, six stems) and skips tracks
-already separated. Point manifest rows at the stem files and tag them with
-`stem`. One 4-bar window across six stems gives six loops you can EQ apart.
-The original Demucs repository is archived; its author maintains a fork at
-[adefossez/demucs](https://github.com/adefossez/demucs).
+Edge fades stop a loop clicking, but on a sustained pad they dip to silence
+at every wrap. `--xfade-ms 20` (or a row's `xfade_ms`) instead fades the
+loop's tail into the audio just before its start, so the wrap plays exactly
+what the source played there. The length doesn't change, and because the two
+sides are similar audio, the linear blend never exceeds the source's peak.
 
 ## Known issues
 
-- **`--check-bpm` can't currently fail.** Its pass condition includes a
-  comparison that is always true, and its 2% tolerance would let a 2 BPM error
-  through anyway.
-- **The headroom check fails loud masters.** Loops cut from a master that
-  already peaks at full scale fail, even though the cut adds no gain.
-- **The tiling note overpromises.** It says "48 kHz sources avoid this" even at
-  tempos where 48 kHz doesn't tile (see the table above).
-- **The seam check can't see placement.** It compares the first and last 20 ms,
-  so a loop that starts off the beat can still pass.
+- **rekordbox's database format changes between versions.** If
+  `import --from rekordbox` can't read yours, export the collection as XML
+  from rekordbox and use `--from rekordbox-xml --xml FILE`.
+- **Tempo-changing tracks get local grids.** A track whose beats don't fit one
+  steady grid is flagged `grid-fit`. Each mark is snapped to the whole-track
+  grid where that still fits the nearby beats, and otherwise to a grid fitted
+  to the 64 beats around it, provided that grid fits clearly better and its
+  tempo isn't a half- or double-time reading. A mark where neither holds is
+  refused. On a tempo-changing track the `tracks.csv` tempo is only an
+  average, so `cut` checks those loops against the tempo measured from the
+  audio.
+- **Odd bar lengths need their tempo set in Live by hand** (see
+  [Output files](#output-files)).
+- **Starts in beatless passages can't be judged.** `beat_alignment` reports
+  *not judged* there, so a hand-typed start in a breakdown relies on the grid
+  alone.
 
 ## Roadmap
 
-- Beat-grid detection with a per-track phase correction, so each start snaps
-  to the nearest beat and the tool reports how far it moved.
-- Importing loop markers from DJ software (rekordbox, Serato), so you mark
-  loops by ear on a waveform instead of typing times.
-- A one-shot mode for phrases and stabs, BPM, key and stem tags written into
-  output files, and a prep step that makes lossless working copies at one
-  sample rate.
+- An audition page: each master's waveform with the cutter's own bar lines,
+  where a click previews the exact loop and a key accepts it into a manifest.
+- Ableton integration: the right tempo for odd-length and half-bar clips, and
+  a generated Live Set with each loop family in one Launchpad column.
 
 ## Development
 
 ```bash
-pytest -q
+pytest -q            # unit tests: synthetic audio only, no model weights
+pytest -q -m slow    # the real beat detector and ffmpeg
 ```
 
 ```
 src/loopcutter/
+  model.py      shared data types: Grid, TrackRecord, Marker, SnapResult
+  onsets.py     the one onset detector that the grid, the analysis and the checks share
   timing.py     sample arithmetic, no file I/O
+  workspace.py  finding and creating workspaces
+  audio_io.py   reading any audio file (libsndfile, else ffmpeg)
+  prep.py       lossless working masters
+  grid.py       beat-grid fit, bar phase, attack phase, local grids
+  keydetect.py  key from tags, cross-checked with keyfinder-cli
+  trackdb.py    tracks.csv
+  analyse.py    scan: one analysis per master
+  markers.py    reading marks and grids from rekordbox and Serato
+  snap.py       app-offset correction, snapping, marks to manifest rows
   manifest.py   CSV to LoopSpec; all validation lives here
   cut.py        extraction, zero-crossing snap, edge fades
   verify.py     objective checks on every output
-  naming.py     output filename convention
+  tags.py       ID3v2.3 tags on AIFF and WAV loops
+  naming.py     output filename convention and library layout
   keys.py       key parsing and session-cover arithmetic, no file I/O
   keyreport.py  spreadsheet loading and report rendering
-  stems.py      optional Demucs pre-pass
+  stems.py      separation, resampling to the master, alignment proof
   cli.py        command-line entry point
 ```
 
@@ -327,11 +550,17 @@ The code keeps a few rules:
 
 - Loop length always comes from tempo and bar count, rounded once.
   `tests/test_timing.py` guards this against a well-meant "simplification".
+- Analysis proposes and `cut` disposes: `scan` writes `tracks.csv`, only
+  `import` and `resolve` move a start (reporting every move), and `cut` never
+  moves a start or runs a model.
+- Shared types go in `model.py`, and every part that looks for attacks uses
+  `onsets.py`, so the grid and the checks can't disagree about where a beat is.
 - `timing.py` and `keys.py` do arithmetic only, so they stay testable without
   audio fixtures.
 - Failures are loud and name the manifest row. The tool never writes a short,
   silent or wrong-length file.
-- Nothing is fixed silently: no trimming to fit, no resampling, no padding.
+- Nothing is fixed silently: no trimming to fit, no resampling at cut time, no
+  padding.
 
 ## Licence
 
