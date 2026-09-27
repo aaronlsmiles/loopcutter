@@ -1,3 +1,4 @@
+import pathlib
 import numpy as np
 import pytest
 import soundfile as sf
@@ -334,3 +335,196 @@ def test_a_zero_shift_limit_means_zero(tmp_path, click_track, monkeypatch):
     ws = _ws(tmp_path, click_track, monkeypatch)
     (ws.manifests / "s.csv").write_text("track_id,label,bars,start,snap\nArtist - Clicks,A1,4,15.03,beat\n")
     assert main(["resolve", "manifests/s.csv", "--max-shift-ms", "0"]) == 1
+
+
+def _two_copies(tmp_path, click_track, seconds=None, lossless_name="Song.wav"):
+    audio, sr = sf.read(str(click_track["path"]), dtype="float32", always_2d=True)
+    (tmp_path / "lossy").mkdir(exist_ok=True); (tmp_path / "lossless").mkdir(exist_ok=True)
+    sf.write(str(tmp_path / "lossy" / "Song.mp3"), audio, sr, format="MP3", subtype="MPEG_LAYER_III")
+    if seconds is None:                                        # the same track, 40 ms longer (encoder padding)
+        other = np.concatenate([audio, np.zeros((int(0.04 * sr), audio.shape[1]), dtype=audio.dtype)])
+    else:
+        other = audio[: int(seconds * sr)]
+    sf.write(str(tmp_path / "lossless" / lossless_name), other, sr)
+    return tmp_path / "lossy" / "Song.mp3", tmp_path / "lossless" / lossless_name
+
+
+def _tag_key(master, key="Am"):
+    from mutagen.aiff import AIFF
+    from mutagen.id3 import TKEY
+
+    tagged = AIFF(str(master))
+    if tagged.tags is None:
+        tagged.add_tags()
+    tagged.tags.add(TKEY(encoding=3, text=[key])); tagged.save(v2_version=3)
+
+
+def test_prep_rebuilds_a_lossy_master_from_a_lossless_copy_and_keeps_what_is_yours(
+        tmp_path, click_track, monkeypatch, capsys):
+    from dataclasses import replace
+    from mutagen.aiff import AIFF
+    from mutagen.id3 import TKEY
+
+    ws = init_workspace(tmp_path / "ws")
+    monkeypatch.chdir(ws.root)
+    mp3, wav = _two_copies(tmp_path, click_track)
+    assert main(["prep", str(mp3)]) == 0
+    _tag_key(ws.masters / "Song.aiff")                                       # as a key app would
+    records = load_tracks(ws.tracks_csv)
+    save_tracks(ws.tracks_csv, {"Song": replace(records["Song"], bpm=128.0, override_bpm=127.5,
+                                                override_phase_ms=4.0)})
+    capsys.readouterr()
+    assert main(["prep", str(wav.parent), str(mp3.parent)]) == 0
+    out = capsys.readouterr().out
+    assert "SKIP Song.mp3" in out and "REBUILT Song.aiff" in out and "1 master(s) written" in out
+    assert "DJ app" in out
+    record = load_tracks(ws.tracks_csv)["Song"]
+    assert record.source.endswith("Song.wav") and record.bpm == 0.0 and record.override_bpm == 127.5
+    assert record.override_phase_ms == 4.0 and "check override_phase_ms" in out
+    assert read_tag(ws.masters / "Song.aiff", "TKEY") == "Am"                 # your key tag survives
+    assert len(list((ws.masters / ".replaced").glob("Song.aiff_*.aiff"))) == 1   # the old master is kept
+    assert not list(ws.masters.glob(".building*"))
+    assert record.duration == pytest.approx(sf.info(str(ws.masters / "Song.aiff")).duration)
+
+
+def test_prep_never_rebuilds_a_different_track_that_shares_a_name(tmp_path, click_track, monkeypatch, capsys):
+    ws = init_workspace(tmp_path / "ws")
+    monkeypatch.chdir(ws.root)
+    mp3, wav = _two_copies(tmp_path, click_track, seconds=10.0)              # same name, different length
+    assert main(["prep", str(mp3)]) == 0
+    before = (ws.masters / "Song.aiff").read_bytes()
+    assert main(["prep", str(wav)]) == 0
+    out = capsys.readouterr().out
+    assert "REBUILT" not in out and "CHANGED Song.aiff" in out
+    assert (ws.masters / "Song.aiff").read_bytes() == before
+
+
+def test_prep_upgrades_the_row_when_the_lossy_master_is_gone(tmp_path, click_track, monkeypatch):
+    ws = init_workspace(tmp_path / "ws")
+    monkeypatch.chdir(ws.root)
+    mp3, wav = _two_copies(tmp_path, click_track)
+    assert main(["prep", str(mp3)]) == 0
+    (ws.masters / "Song.aiff").unlink()
+    assert main(["prep", str(wav)]) == 0
+    assert load_tracks(ws.tracks_csv)["Song"].source.endswith("Song.wav")
+
+
+def test_prep_keeps_a_lossless_master_when_a_lossy_copy_turns_up(tmp_path, click_track, monkeypatch, capsys):
+    ws = init_workspace(tmp_path / "ws")
+    monkeypatch.chdir(ws.root)
+    mp3, wav = _two_copies(tmp_path, click_track)
+    assert main(["prep", str(wav)]) == 0
+    assert main(["prep", str(mp3)]) == 0
+    out = capsys.readouterr().out
+    assert "KEPT Song.aiff" in out and "delete the master" not in out
+
+
+def test_prep_refuses_a_negative_or_unreadable_headroom(tmp_path, click_track, monkeypatch):
+    ws = init_workspace(tmp_path / "ws")
+    monkeypatch.chdir(ws.root)
+    config = (ws.root / "loopcutter.toml").read_text()
+    for bad in ("-6.0", '"three"'):
+        (ws.root / "loopcutter.toml").write_text(config.replace("headroom_db = 3.0", f"headroom_db = {bad}"))
+        assert main(["prep", str(click_track["path"])]) == 2
+
+
+def test_prep_takes_the_workspace_headroom_off_every_master(tmp_path, click_track, monkeypatch):
+    ws = init_workspace(tmp_path / "ws")
+    monkeypatch.chdir(ws.root)
+    config = (ws.root / "loopcutter.toml").read_text()
+    (ws.root / "loopcutter.toml").write_text(config.replace("headroom_db = 3.0", "headroom_db = 6.0"))
+    assert main(["prep", str(click_track["path"])]) == 0
+    source, _ = sf.read(str(click_track["path"]))
+    master, _ = sf.read(str(ws.masters / "click.aiff"))
+    assert np.max(np.abs(master)) == pytest.approx(0.5 * np.max(np.abs(source)), rel=0.02)
+
+
+def test_a_rebuild_keeps_the_master_s_name_whatever_the_case_of_the_new_file(tmp_path, click_track, monkeypatch):
+    ws = init_workspace(tmp_path / "ws")
+    monkeypatch.chdir(ws.root)
+    mp3, wav = _two_copies(tmp_path, click_track, lossless_name="song.wav")
+    assert main(["prep", str(mp3)]) == 0
+    assert main(["prep", str(wav)]) == 0
+    assert [p.name for p in ws.masters.glob("*.aiff")] == ["Song.aiff"]     # rekordbox still finds it
+    records = load_tracks(ws.tracks_csv)
+    assert list(records) == ["Song"] and records["Song"].source.endswith("song.wav")
+
+
+def test_a_rebuild_that_fails_leaves_the_old_master_and_its_tags(tmp_path, click_track, monkeypatch):
+    import loopcutter.prep as prep
+
+    ws = init_workspace(tmp_path / "ws")
+    monkeypatch.chdir(ws.root)
+    mp3, wav = _two_copies(tmp_path, click_track)
+    assert main(["prep", str(mp3)]) == 0
+    _tag_key(ws.masters / "Song.aiff")
+
+    def broken(*args, **kwargs):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(prep, "prepare_master", broken)
+    with pytest.raises(KeyboardInterrupt):
+        main(["prep", str(wav)])
+    assert read_tag(ws.masters / "Song.aiff", "TKEY") == "Am"
+    assert not list((ws.masters / ".replaced").glob("*")) if (ws.masters / ".replaced").exists() else True
+
+
+def test_a_different_track_is_never_built_under_the_old_row(tmp_path, click_track, monkeypatch, capsys):
+    ws = init_workspace(tmp_path / "ws")
+    monkeypatch.chdir(ws.root)
+    mp3, wav = _two_copies(tmp_path, click_track, seconds=10.0)
+    assert main(["prep", str(mp3)]) == 0
+    (ws.masters / "Song.aiff").unlink()
+    assert main(["prep", str(wav)]) == 0
+    assert "CHANGED" in capsys.readouterr().out and not (ws.masters / "Song.aiff").exists()
+
+
+def test_kept_says_so_when_the_lossless_master_is_missing(tmp_path, click_track, monkeypatch, capsys):
+    ws = init_workspace(tmp_path / "ws")
+    monkeypatch.chdir(ws.root)
+    mp3, wav = _two_copies(tmp_path, click_track)
+    assert main(["prep", str(wav)]) == 0
+    (ws.masters / "Song.aiff").unlink()
+    assert main(["prep", str(mp3)]) == 0
+    assert "missing" in capsys.readouterr().out
+
+
+def test_a_non_finite_headroom_is_refused(tmp_path, click_track, monkeypatch):
+    ws = init_workspace(tmp_path / "ws")
+    monkeypatch.chdir(ws.root)
+    config = (ws.root / "loopcutter.toml").read_text()
+    for bad in ("nan", "inf"):
+        (ws.root / "loopcutter.toml").write_text(config.replace("headroom_db = 3.0", f"headroom_db = {bad}"))
+        assert main(["prep", str(click_track["path"])]) == 2
+
+
+def test_prep_never_takes_the_workspace_s_own_masters_as_sources(tmp_path, click_track, monkeypatch, capsys):
+    ws = init_workspace(tmp_path / "ws")
+    monkeypatch.chdir(ws.root)
+    mp3, wav = _two_copies(tmp_path, click_track)
+    assert main(["prep", str(mp3)]) == 0
+    before = (ws.masters / "Song.aiff").read_bytes()
+    assert main(["prep", str(ws.root)]) == 2                       # nothing but the workspace itself
+    assert (ws.masters / "Song.aiff").read_bytes() == before
+    assert load_tracks(ws.tracks_csv)["Song"].source.endswith("Song.mp3")
+
+
+def test_a_rebuild_is_saved_even_if_a_later_track_stops_the_run(tmp_path, click_track, monkeypatch):
+    import loopcutter.prep as prep
+
+    ws = init_workspace(tmp_path / "ws")
+    monkeypatch.chdir(ws.root)
+    mp3, wav = _two_copies(tmp_path, click_track)
+    assert main(["prep", str(mp3)]) == 0
+    audio, sr = sf.read(str(click_track["path"]), dtype="float32", always_2d=True)
+    sf.write(str(wav.parent / "Zed.wav"), audio, sr)
+    real = prep.prepare_master
+
+    def stop_on_zed(source, *args, **kwargs):
+        if pathlib.Path(source).name == "Zed.wav":
+            raise KeyboardInterrupt
+        return real(source, *args, **kwargs)
+    monkeypatch.setattr(prep, "prepare_master", stop_on_zed)
+    with pytest.raises(KeyboardInterrupt):
+        main(["prep", str(wav.parent)])
+    record = load_tracks(ws.tracks_csv)["Song"]
+    assert record.source.endswith("Song.wav") and record.bpm == 0.0

@@ -111,6 +111,8 @@ directory to the folder holding `loopcutter.toml`.
 |---|---|---|
 | `[audio] sample_rate` | `48000` | The rate of every master. A cut never resamples. |
 | `[audio] subtype` | `"PCM_24"` | The masters' sample format. |
+| `[audio] headroom_db` | `3.0` (0 if absent) | Gain taken off every master, so overs from decoding and resampling loud sources fit instead of clipping. Changing it only affects masters made afterwards. |
+| `[prep] replaced_dir` | `"masters/.replaced"` | Where a copy of a master built from a lossy file is kept when a lossless copy replaces it. Point it outside `masters/` if you drag that whole folder into a DJ app. |
 | `[sources] paths` | `[]` | Folders or files that `prep` reads when given none. |
 | `[snap] max_shift_ms` | `60` | The furthest a start may be moved onto the grid. |
 | `[marking] app` | `"rekordbox"` | What `import` reads when `--from` isn't given: `rekordbox`, `rekordbox-xml` or `serato`. |
@@ -207,9 +209,9 @@ happens earlier, in `import` and `resolve`, where every move is reported.
 ## Marking loops in DJ software
 
 1. **`loopcutter prep`** makes 24-bit masters at the workspace rate from your
-   sources. Existing masters are never overwritten, because Mixed In Key or a
-   DJ app may have written tags to them. A changed source is reported instead;
-   delete the master to rebuild it.
+   sources. Existing masters are not overwritten, because Mixed In Key or a
+   DJ app may have written tags to them; the one exception is below. A changed
+   source is reported instead; delete the master to rebuild it.
 2. **Import the masters into rekordbox** as one playlist, name it in
    `loopcutter.toml` under `[marking] playlist`, and fix any grid whose first
    beat is wrong.
@@ -247,10 +249,25 @@ it again keeps your edits.
 loopcutter prep [FILES OR FOLDERS ...]
 ```
 
-Decodes each source once, resamples it once and writes a 24-bit AIFF master,
-adding a row to `tracks.csv`. Folders are searched recursively. Two sources
-that would make the same master are refused before anything is written.
-Samples pushed over full scale by resampling are clipped and counted.
+Decodes each source once, resamples it once, takes `headroom_db` off, and
+writes a 24-bit AIFF master, adding a row to `tracks.csv`. Folders are
+searched recursively, skipping hidden folders and the workspace's own masters.
+Masters are named after the source file, so a lossless
+file and a lossy copy with the same name make the same master: the lossless
+file wins, and the lossy one is skipped with a note (names are
+compared as a case-insensitive filesystem sees them, an `.m4a` counts as
+lossless only if it holds ALAC, and the two must be the same length to within
+0.25 s). A master already built from a lossy file is rebuilt when a lossless
+copy of the same track appears; a different track that shares a name is
+reported as CHANGED and left alone. The rebuild happens beside the masters
+and swaps in under the old master's name only when it's complete: a copy of
+the old master is kept in `replaced_dir`, its tags (except DJ-app cue data)
+are copied onto the new one, your `override_*` columns are kept, and the rest
+of the track's analysis is left for `scan`. Re-analyse the track in your DJ
+app too, because its cues were placed on the old audio. Any other pair of sources that would
+make the same master is refused before anything is written. Loud MP3s
+decode above full scale; the headroom keeps those peaks, and any sample still
+over is clipped and counted.
 
 ### `scan`
 
