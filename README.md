@@ -45,9 +45,9 @@ loop on disk can be rebuilt from one CSV file.
 
 ## Status
 
-Version 0.2, in development. The beat grid, the DJ-app import, stems,
-one-shots and the checks are in place and tested. See [Roadmap](#roadmap) and
-[Known issues](#known-issues).
+Version 0.2. The beat grid, the DJ-app import, stems, one-shots and the
+checks are in place, tested, and proven on a real library. See
+[Roadmap](#roadmap) for what's next and [Known issues](#known-issues).
 
 ## Install
 
