@@ -6,10 +6,16 @@ audio, not the name. Keep the pattern stable: renaming files breaks any set
 or sampler project that points at them.
 
     Artist - Track [16.2][128][4bar][bass].aiff
+    Artist - Track [16.2][128][4bar][bass][LC-1a2b3c4d].aiff    (with a provenance code)
+
+The code, last so the library still sorts by artist, is a short hash of what the loop is: track, label, length,
+stem and kind. Re-marking a start keeps it; a different loop gets a different one. It lets a loop be traced back
+to its record from a set, a collected project or a sampler that only kept the file name.
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 
@@ -23,7 +29,15 @@ def sanitise(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip(" .")
 
 
-def build_filename(spec: LoopSpec, fmt: str = "aiff") -> str:
+def loop_code(spec: LoopSpec) -> str:
+    """LC- and 8 hex of a SHA-1 over the loop's identity (not its start, so re-marking keeps the code)."""
+    bars = f"{float(spec.bars):g}"
+    identity = "|".join([spec.track_id or spec.source.stem, spec.label, getattr(spec, "kind", "loop"), bars,
+                         spec.stem or "full"])
+    return "LC-" + hashlib.sha1(identity.encode()).hexdigest()[:8]
+
+
+def build_filename(spec: LoopSpec, fmt: str = "aiff", code: str | None = None) -> str:
     stub_parts = [p for p in (spec.artist, spec.track) if p]
     stub = " - ".join(stub_parts) if stub_parts else spec.source.stem
 
@@ -37,6 +51,8 @@ def build_filename(spec: LoopSpec, fmt: str = "aiff") -> str:
         tags.append(spec.key)
     if spec.stem:
         tags.append(spec.stem)
+    if code:
+        tags.append(code)
 
     suffix = "".join(f"[{sanitise(str(t))}]" for t in tags)
     return f"{sanitise(stub)} {suffix}.{fmt}"
