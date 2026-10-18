@@ -532,8 +532,8 @@ def _cmd_cut(args) -> int:
         indexed.append(index_row(named, code, result.output, out_root, source_file, args.manifest))
         if coding:                         # an uncoded or stale-coded copy is the same loop: replace it
             for older in copies_of(result.output.parent, spec, args.format):
-                if not same_name(older.name, result.output.name):     # never the file just written
-                    older.unlink()
+                if not os.path.samefile(older, result.output):        # never the file just written (on APFS an
+                    older.unlink()                                    # NFD spelling of its name is that file)
         snap = f" snap {result.snap_offset_samples:+d}" if result.snap_offset_samples else ""
         print(f"  ok  {result.output.relative_to(out_root)}  {result.length_samples} samples{snap}")
         for check in report.warnings:
