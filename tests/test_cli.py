@@ -6,11 +6,19 @@ import soundfile as sf
 from loopcutter.cli import main
 from loopcutter.manifest import ManifestError, load_manifest
 from loopcutter.model import TrackRecord
+from loopcutter.naming import loop_code
 from loopcutter.tags import read_tag
 from loopcutter.trackdb import load_tracks, save_tracks
 from loopcutter.workspace import init_workspace
 
 P128 = 60 / 128
+
+
+def _coded(name, manifest, row=0):
+    """A loop's file name now ends with its provenance code (naming.loop_code)."""
+    code = loop_code(load_manifest(manifest)[row])
+    stem, dot, ext = name.rpartition(".")
+    return f"{stem}[{code}].{ext}"
 
 
 def _ws(tmp_path, click_track, monkeypatch):
@@ -64,10 +72,10 @@ def test_cut_files_tags_and_checks_in_a_workspace(tmp_path, click_track, monkeyp
         "source,track_id,label,artist,track,bars,bpm,start,stem,key\n"
         f"{ws.masters / 'Artist - Clicks.aiff'},Artist - Clicks,A1,Artist,Clicks,4,128,15.0,bass,8A\n")
     assert main(["cut", "manifests/s.csv"]) == 0
-    out = ws.loops / "aiff" / "bass" / "125-129" / "Artist - Clicks [A1][128][4bar][8A][bass].aiff"
+    out = ws.loops / "aiff" / "bass" / "125-129" / _coded("Artist - Clicks [A1][128][4bar][8A][bass].aiff", ws.manifests / "s.csv")
     assert read_tag(out, "TBPM") == "128" and read_tag(out, "TIT1") == "bass"
     assert main(["cut", "manifests/s.csv", "--format", "wav"]) == 0
-    wav = ws.loops / "wav" / "bass" / "125-129" / "Artist - Clicks [A1][128][4bar][8A][bass].wav"
+    wav = ws.loops / "wav" / "bass" / "125-129" / _coded("Artist - Clicks [A1][128][4bar][8A][bass].wav", ws.manifests / "s.csv")
     assert wav.exists() and read_tag(wav, "TBPM") is None                # WAV untagged by default
 
 
@@ -212,9 +220,9 @@ def test_cut_writes_oneshots_and_crossfaded_loops(tmp_path, click_track, monkeyp
                                         f"{master},V1,oneshot,,,5.0,5.8\n"
                                         f"{master},A1,loop,4,128,15.0,\n")
     assert main(["cut", "manifests/s.csv", "--xfade-ms", "10"]) == 0
-    one = ws.loops / "aiff" / "full" / "oneshots" / "Artist - Clicks [V1][oneshot].aiff"
+    one = ws.loops / "aiff" / "full" / "oneshots" / _coded("Artist - Clicks [V1][oneshot].aiff", ws.manifests / "s.csv", 0)
     assert read_tag(one, "TBPM") is None and read_tag(one, "TIT2").endswith("[V1][oneshot]")
-    assert (ws.loops / "aiff" / "full" / "125-129" / "Artist - Clicks [A1][128][4bar].aiff").exists()
+    assert (ws.loops / "aiff" / "full" / "125-129" / _coded("Artist - Clicks [A1][128][4bar].aiff", ws.manifests / "s.csv", 1)).exists()
     assert "Live infers tempo" not in capsys.readouterr().out
 
 
@@ -244,7 +252,7 @@ def test_stem_rows_are_cut_from_the_stem_and_timed_on_the_full_mix(tmp_path, cli
     (ws.stems / "Artist - Clicks").mkdir(parents=True)
     sf.write(str(ws.stems / "Artist - Clicks" / "bass.aiff"), audio * 0.5, sr, format="AIFF", subtype="PCM_24")
     assert main(["cut", "manifests/s.csv"]) == 0
-    loop, _ = sf.read(str(ws.loops / "aiff" / "bass" / "125-129" / "Artist - Clicks [A1][128][4bar][bass].aiff"))
+    loop, _ = sf.read(str(ws.loops / "aiff" / "bass" / "125-129" / _coded("Artist - Clicks [A1][128][4bar][bass].aiff", ws.manifests / "s.csv")))
     assert np.max(np.abs(loop)) == pytest.approx(0.5 * np.max(np.abs(audio)), rel=0.05)
 
 

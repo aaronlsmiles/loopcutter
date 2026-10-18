@@ -17,6 +17,7 @@ import argparse
 import csv
 import importlib.util
 import math
+import os
 import shutil
 import statistics
 import tempfile
@@ -35,7 +36,7 @@ from .keys import (COMFORT_SEMITONES, MAX_POSSIBLE_SEMITONES, KeyParseError, par
                    plan_sessions, sweep)
 from .manifest import ManifestError, load_manifest
 from .model import TrackRecord
-from .naming import build_filename, library_subdir
+from .naming import build_filename, copies_of, library_subdir, loop_code, same_name
 from .timing import parse_position, rates_that_tile, tiling_error_ms, tiling_error_samples
 from .trackdb import load_tracks, save_tracks, track_id_for
 from .verify import Check, verify_cut
@@ -408,7 +409,7 @@ def _cmd_stems(args) -> int:
     return 1 if failures else 0
 
 
-def _tag(result, spec) -> None:
+def _tag(result, spec, extra=None) -> None:
     from .tags import write_loop_tags
 
     try:
@@ -418,7 +419,13 @@ def _tag(result, spec) -> None:
     length = "oneshot" if spec.kind == "oneshot" else f"{spec.bars:g}bar"
     write_loop_tags(result.output, bpm=spec.bpm or None, key=key, stem=spec.stem,
                     title=f"{spec.track or spec.source.stem} [{spec.label}][{length}]",
-                    artist=spec.artist, comment=spec.label)
+                    artist=spec.artist, comment=spec.label, extra=extra)
+
+
+def _provenance_tags(spec, code, source_file) -> dict[str, str]:
+    from .provenance import source_text
+
+    return {"PROVENANCE_CODE": code, "SOURCE": source_text(spec, source_file)}
 
 
 def _cmd_cut(args) -> int:
@@ -433,6 +440,7 @@ def _cmd_cut(args) -> int:
     out_root = Path(args.out) if args.out else (ws.loops / args.format if ws else Path("loops"))
     layout = args.layout or ("library" if ws else "flat")
     tagging = args.tag if args.tag is not None else (ws is not None and args.format == "aiff")
+    coding = args.code if args.code is not None else ws is not None
     if tagging and args.format == "flac":
         print("error: --tag writes ID3 tags, which FLAC files don't use", file=sys.stderr)
         return 2
@@ -453,8 +461,12 @@ def _cmd_cut(args) -> int:
                   f"from {spec.start_seconds:.6f}s  <- {spec.source.name}")
         return 0
 
-    failures = 0
+    from .provenance import index_row, update_index
+
+    failures, indexed = 0, []
     for spec in specs:
+        named = spec                       # naming and identity come from the row, before a stem swaps the source
+        code = loop_code(named)
         timing_source = None
         if spec.stem and spec.stem != "full" and spec.track_id and ws is not None:
             stem_file = ws.stems / spec.track_id / f"{spec.stem}.aiff"
@@ -471,16 +483,17 @@ def _cmd_cut(args) -> int:
                   "give it a track_id in a workspace to cut it from separated stems")
         record = tracks.get(spec.track_id) if spec.track_id else None
         out_dir = out_root / library_subdir(spec) if layout == "library" else out_root
+        source_file = (record.source if record is not None and record.source else None) or named.source
+        filename = build_filename(spec, args.format, code=code if coding else None)
         try:
             if spec.kind == "oneshot":
                 result = cut_oneshot(spec, out_dir=out_dir, fmt=args.format, subtype=args.subtype,
-                                     snap_ms=args.snap_ms, trim_db=args.trim_db,
-                                     filename=build_filename(spec, args.format))
+                                     snap_ms=args.snap_ms, trim_db=args.trim_db, filename=filename)
             else:
                 result = cut_loop(spec, out_dir=out_dir, fmt=args.format, subtype=args.subtype,
                                   snap_ms=args.snap_ms, fade_ms=args.fade_ms, trim_db=args.trim_db,
                                   xfade_ms=args.xfade_ms if spec.xfade_ms is None else spec.xfade_ms,
-                                  filename=build_filename(spec, args.format))
+                                  filename=filename)
         except (FileNotFoundError, ValueError) as exc:
             print(f"  FAIL row {spec.row_number}: {exc}", file=sys.stderr)
             failures += 1
@@ -506,7 +519,7 @@ def _cmd_cut(args) -> int:
                 if check.name == "beat_alignment" and not check.passed:
                     check.passed, check.warn = True, True
         if tagging and report.ok:
-            _tag(result, spec)
+            _tag(result, spec, extra=_provenance_tags(named, code, source_file))
             if _sf.info(str(result.output)).frames != result.length_samples:
                 report.checks.append(Check("tagging", False, "tagging changed the audio length"))
         if not report.ok:
@@ -516,15 +529,63 @@ def _cmd_cut(args) -> int:
             for check in report.failures:
                 print(f"         {check.name}: {check.detail}", file=sys.stderr)
             continue
+        indexed.append(index_row(named, code, result.output, out_root, source_file, args.manifest))
+        if coding:                         # an uncoded or stale-coded copy is the same loop: replace it
+            for older in copies_of(result.output.parent, spec, args.format):
+                if not os.path.samefile(older, result.output):        # never the file just written (on APFS an
+                    older.unlink()                                    # NFD spelling of its name is that file)
         snap = f" snap {result.snap_offset_samples:+d}" if result.snap_offset_samples else ""
         print(f"  ok  {result.output.relative_to(out_root)}  {result.length_samples} samples{snap}")
         for check in report.warnings:
             print(f"      warn {check.name}: {check.detail}")
 
+    if indexed:
+        update_index(out_root, indexed)
     if failures:
         print(f"\n{failures} of {len(specs)} failed", file=sys.stderr)
         return 1
     print(f"\nall {len(specs)} loops written to {out_root}")
+    return 0
+
+
+def _cmd_provenance(args) -> int:
+    """Codes, SOURCE tags and index rows for loops already cut (by a version without codes)."""
+    from .provenance import index_row, update_index
+    from .tags import write_extra_tags
+
+    ws = find_workspace()
+    tracks = load_tracks(ws.tracks_csv) if ws else {}
+    out_root = Path(args.out) if args.out else (ws.loops / args.format if ws else Path("loops"))
+    layout = args.layout or ("library" if ws else "flat")
+    rows, missing = [], 0
+    for manifest in args.manifests:
+        try:
+            specs = load_manifest(manifest, args.audio_root)
+        except ManifestError as exc:
+            print(f"manifest error: {exc}", file=sys.stderr)
+            return 2
+        for spec in specs:
+            code = loop_code(spec)
+            out_dir = out_root / library_subdir(spec) if layout == "library" else out_root
+            coded = out_dir / build_filename(spec, args.format, code=code)
+            found = copies_of(out_dir, spec, args.format)
+            if not found:
+                missing += 1
+                print(f"  not cut yet: row {spec.row_number} {build_filename(spec, args.format)}")
+                continue
+            path = next((p for p in found if same_name(p.name, coded.name)), found[0])
+            if not same_name(path.name, coded.name) and not args.keep_names and not args.dry_run:
+                os.replace(path, coded)              # uncoded, or coded from another spelling of the row
+                path = coded
+            record = tracks.get(spec.track_id) if spec.track_id else None
+            source_file = (record.source if record is not None and record.source else None) or spec.source
+            if not args.dry_run and args.format == "aiff":
+                write_extra_tags(path, _provenance_tags(spec, code, source_file))
+            rows.append(index_row(spec, code, path, out_root, source_file, manifest))
+            print(f"  {code}  {path.relative_to(out_root)}")
+    if rows and not args.dry_run:
+        update_index(out_root, rows)
+    print(f"\n{len(rows)} loop(s) recorded in {out_root / 'provenance.csv'}" + (f", {missing} not cut yet" if missing else ""))
     return 0
 
 
@@ -584,7 +645,19 @@ def build_parser() -> argparse.ArgumentParser:
     cut.add_argument("--lenient", action="store_true",
                      help="report beat_alignment failures as warnings (for unsteady material)")
     cut.add_argument("--dry-run", action="store_true")
+    cut.add_argument("--code", action=argparse.BooleanOptionalAction, default=None,
+                     help="end each name with a provenance code [LC-...] (default in a workspace)")
     cut.set_defaults(func=_cmd_cut)
+
+    prov = sub.add_parser("provenance", help="add codes, SOURCE tags and provenance.csv rows to loops already cut")
+    prov.add_argument("manifests", nargs="+")
+    prov.add_argument("--out", default=None, help="default: loops/<format> in a workspace, else ./loops")
+    prov.add_argument("--audio-root", default=None)
+    prov.add_argument("--layout", choices=["flat", "library"], default=None)
+    prov.add_argument("--format", default="aiff", choices=["aiff", "wav", "flac"])
+    prov.add_argument("--keep-names", action="store_true", help="tag and index, but don't add the code to names")
+    prov.add_argument("--dry-run", action="store_true")
+    prov.set_defaults(func=_cmd_provenance)
 
     stems = sub.add_parser("stems", help="separate masters into stems at the master's rate")
     stems.add_argument("tracks", nargs="+", help="track_ids from tracks.csv")

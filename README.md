@@ -34,6 +34,11 @@ loop on disk can be rebuilt from one CSV file.
   against the analysis.
 - **Tagged and filed.** AIFF loops carry BPM, key and stem tags (ID3v2.3) and
   are filed by stem and tempo band, ready for a sample browser.
+- **Traceable.** Every loop's name ends with a short provenance code
+  (`[LC-1a2b3c4d]`), its tags say which recording it came from and where, and
+  `provenance.csv` next to the loops lists them all. A loop used in a set, a
+  collected project or a sampler can be traced back to its source, which is
+  what you need when it comes to clearing samples.
 - **Stems and one-shots.** `stems` separates a master into drums, bass,
   vocals and more at the master's own rate, and stem rows are cut from them.
   One-shot rows cut a phrase or stab from a start to an end.
@@ -356,8 +361,29 @@ loopcutter cut MANIFEST [options]
 | `--check-bpm` | off | Measures the tempo from the audio. Automatic for analysed tracks. |
 | `--lenient` | off | Reports `beat_alignment` failures as warnings, for unsteady material. |
 | `--dry-run` | off | Resolves every row without writing audio. |
+| `--code`, `--no-code` | on in a workspace | Ends each name with its provenance code. |
 
 32-bit float isn't the default because many CDJs won't play it.
+
+**Provenance.** The code is `LC-` plus 8 hex of a hash of what the loop is:
+track, label, length, stem and kind, but not the start, so re-marking a loop
+keeps its code. Tagged loops also carry `TXXX:PROVENANCE_CODE` and
+`TXXX:SOURCE` (artist and track, the source file, the start, bars at BPM, stem
+and label), and every cut updates `provenance.csv` in the output folder, one
+row per code. Re-cutting a row that was cut before codes existed replaces the
+old, uncoded file.
+
+### `provenance`
+
+```bash
+loopcutter provenance MANIFEST [MANIFEST ...] [--keep-names] [--dry-run]
+```
+
+Adds codes, `SOURCE` tags and `provenance.csv` rows to loops that are already
+cut, without cutting them again. By default it renames each file to its coded
+name; `--keep-names` tags and indexes only. Renaming moves files that a set or
+sampler project may point at, so run it before the loops are in use, or
+re-point the set afterwards.
 
 ### `inspect`
 

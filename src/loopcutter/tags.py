@@ -10,7 +10,7 @@ from pathlib import Path
 
 import mutagen
 from mutagen.aiff import AIFF
-from mutagen.id3 import COMM, TBPM, TIT1, TIT2, TKEY, TPE1
+from mutagen.id3 import COMM, TBPM, TIT1, TIT2, TKEY, TPE1, TXXX
 from mutagen.mp4 import MP4
 from mutagen.wave import WAVE
 
@@ -36,7 +36,7 @@ def _set(tags, frame, text: str) -> None:
 
 def write_loop_tags(path, *, bpm: float | None, key: Key | None = None, stem: str | None = None,
                     title: str | None = None, artist: str | None = None,
-                    comment: str | None = None) -> None:
+                    comment: str | None = None, extra: dict[str, str] | None = None) -> None:
     audio = _open(path)
     if audio.tags is None:
         audio.add_tags()
@@ -51,6 +51,18 @@ def write_loop_tags(path, *, bpm: float | None, key: Key | None = None, stem: st
     notes = " ".join(n for n in (key.camelot if key else None, comment) if n)
     if notes:
         tags.setall("COMM", [COMM(encoding=3, lang="eng", desc="", text=[notes])])
+    for desc, value in (extra or {}).items():          # user-defined text frames, e.g. PROVENANCE_CODE, SOURCE
+        tags.setall(f"TXXX:{desc}", [TXXX(encoding=3, desc=desc, text=[value])])
+    audio.save(v2_version=3)
+
+
+def write_extra_tags(path, extra: dict[str, str]) -> None:
+    """Only the TXXX frames, on a loop that is already tagged."""
+    audio = _open(path)
+    if audio.tags is None:
+        audio.add_tags()
+    for desc, value in extra.items():
+        audio.tags.setall(f"TXXX:{desc}", [TXXX(encoding=3, desc=desc, text=[value])])
     audio.save(v2_version=3)
 
 
