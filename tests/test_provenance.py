@@ -114,3 +114,61 @@ def test_provenance_can_keep_the_names(tmp_path, click_track, monkeypatch):
     files = list((ws.loops / "aiff").rglob("*.aiff"))
     assert "[LC-" not in files[0].name
     assert read_tag(files[0], "TXXX:PROVENANCE_CODE") == _index(ws)[0]["code"]
+
+
+def test_code_ignores_unicode_normalisation():
+    import unicodedata
+
+    nfc = _spec(track_id="Artist - Zürüx", track="Zürüx")
+    nfd = _spec(track_id=unicodedata.normalize("NFD", "Artist - Zürüx"), track=unicodedata.normalize("NFD", "Zürüx"))
+    assert loop_code(nfc) == loop_code(nfd)
+
+
+def test_a_stale_code_is_corrected_not_duplicated(tmp_path, click_track, monkeypatch):
+    ws = _ws(tmp_path, click_track, monkeypatch)
+    assert main(["cut", "manifests/s.csv"]) == 0
+    [loop] = list((ws.loops / "aiff").rglob("*.aiff"))
+    stale = loop.with_name(re.sub(r"\[LC-[0-9a-f]{8}\]", "[LC-00000000]", loop.name))
+    loop.rename(stale)                                                      # as if coded from another spelling
+    assert main(["provenance", "manifests/s.csv"]) == 0
+    files = list((ws.loops / "aiff").rglob("*.aiff"))
+    assert [f.name for f in files] == [loop.name]
+    rows = _index(ws)
+    assert len(rows) == 1 and rows[0]["code"] == loop_code(load_manifest(ws.manifests / "s.csv")[0])
+
+
+def test_cut_replaces_a_copy_with_a_stale_code(tmp_path, click_track, monkeypatch):
+    ws = _ws(tmp_path, click_track, monkeypatch)
+    assert main(["cut", "manifests/s.csv"]) == 0
+    [loop] = list((ws.loops / "aiff").rglob("*.aiff"))
+    loop.rename(loop.with_name(re.sub(r"\[LC-[0-9a-f]{8}\]", "[LC-00000000]", loop.name)))
+    assert main(["cut", "manifests/s.csv"]) == 0
+    assert [f.name for f in (ws.loops / "aiff").rglob("*.aiff")] == [loop.name]
+
+
+def test_recut_keeps_a_loop_whose_file_name_is_stored_decomposed(tmp_path, click_track, monkeypatch):
+    import unicodedata
+
+    ws = _ws(tmp_path, click_track, monkeypatch)
+    master = ws.masters / "Artist - Clicks.aiff"
+    (ws.manifests / "s.csv").write_text("source,track_id,label,artist,track,bars,bpm,start,stem,key\n"
+                                        f"{master},Artist - Clicks,A1,Artist,Zürüx,4,128,15.0,,8A\n")
+    assert main(["cut", "manifests/s.csv"]) == 0
+    [loop] = list((ws.loops / "aiff").rglob("*.aiff"))
+    loop.rename(loop.with_name(unicodedata.normalize("NFD", loop.name)))    # how macOS may hand names back
+    assert main(["cut", "manifests/s.csv"]) == 0
+    assert len(list((ws.loops / "aiff").rglob("*.aiff"))) == 1
+
+
+def test_index_replaces_the_row_of_a_stale_code_but_keeps_deleted_loops():
+    from loopcutter.provenance import FIELDS, update_index
+    import tempfile
+
+    root = Path(tempfile.mkdtemp())
+    blank = {k: "" for k in FIELDS}
+    update_index(root, [dict(blank, code="LC-00000000", file="full/A [A1][128][4bar][LC-00000000].aiff"),
+                        dict(blank, code="LC-11111111", file="full/Gone [A1][128][4bar][LC-11111111].aiff")])
+    update_index(root, [dict(blank, code="LC-22222222", file="full/A [A1][128][4bar][LC-22222222].aiff")])
+    with open(root / "provenance.csv") as f:
+        codes = sorted(r["code"] for r in csv.DictReader(f))
+    assert codes == ["LC-11111111", "LC-22222222"]

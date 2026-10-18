@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import csv
 import os
+import re
 import time
+import unicodedata
 from pathlib import Path
 
 INDEX = "provenance.csv"
+CODE_IN_NAME = re.compile(r"\[LC-[0-9a-f]{8}\](?=\.[A-Za-z0-9]+$)")
 FIELDS = ["code", "file", "artist", "track", "label", "kind", "bars", "bpm", "stem", "key", "start_seconds",
           "source_file", "manifest", "row", "cut_at"]
 
@@ -43,7 +46,13 @@ def update_index(out_root: Path, rows: list[dict[str, str]]) -> Path:
     if path.exists():
         with open(path, newline="") as f:
             current = {r["code"]: r for r in csv.DictReader(f)}
+    def loop_key(file):                      # the same loop whatever its code (or lack of one) and spelling
+        return CODE_IN_NAME.sub("", unicodedata.normalize("NFC", file))
+
     for row in rows:
+        key = loop_key(row["file"])
+        for code in [c for c, r in current.items() if c != row["code"] and loop_key(r["file"]) == key]:
+            del current[code]                # indexed under a stale code; rows of deleted loops stay
         current[row["code"]] = row
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".partial.csv")

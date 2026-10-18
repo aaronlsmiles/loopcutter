@@ -36,7 +36,7 @@ from .keys import (COMFORT_SEMITONES, MAX_POSSIBLE_SEMITONES, KeyParseError, par
                    plan_sessions, sweep)
 from .manifest import ManifestError, load_manifest
 from .model import TrackRecord
-from .naming import build_filename, library_subdir, loop_code
+from .naming import build_filename, copies_of, library_subdir, loop_code, same_name
 from .timing import parse_position, rates_that_tile, tiling_error_ms, tiling_error_samples
 from .trackdb import load_tracks, save_tracks, track_id_for
 from .verify import Check, verify_cut
@@ -530,10 +530,10 @@ def _cmd_cut(args) -> int:
                 print(f"         {check.name}: {check.detail}", file=sys.stderr)
             continue
         indexed.append(index_row(named, code, result.output, out_root, source_file, args.manifest))
-        if coding:                         # a copy cut before codes existed is the same loop: replace it
-            older = result.output.with_name(build_filename(spec, args.format))
-            if older != result.output and older.exists():
-                older.unlink()
+        if coding:                         # an uncoded or stale-coded copy is the same loop: replace it
+            for older in copies_of(result.output.parent, spec, args.format):
+                if not same_name(older.name, result.output.name):     # never the file just written
+                    older.unlink()
         snap = f" snap {result.snap_offset_samples:+d}" if result.snap_offset_samples else ""
         print(f"  ok  {result.output.relative_to(out_root)}  {result.length_samples} samples{snap}")
         for check in report.warnings:
@@ -567,18 +567,16 @@ def _cmd_provenance(args) -> int:
         for spec in specs:
             code = loop_code(spec)
             out_dir = out_root / library_subdir(spec) if layout == "library" else out_root
-            coded, plain = out_dir / build_filename(spec, args.format, code=code), out_dir / build_filename(spec, args.format)
-            if coded.exists():
-                path = coded
-            elif plain.exists():
-                path = plain
-                if not args.keep_names and not args.dry_run:
-                    os.replace(plain, coded)
-                    path = coded
-            else:
+            coded = out_dir / build_filename(spec, args.format, code=code)
+            found = copies_of(out_dir, spec, args.format)
+            if not found:
                 missing += 1
-                print(f"  not cut yet: row {spec.row_number} {plain.name}")
+                print(f"  not cut yet: row {spec.row_number} {build_filename(spec, args.format)}")
                 continue
+            path = next((p for p in found if same_name(p.name, coded.name)), found[0])
+            if not same_name(path.name, coded.name) and not args.keep_names and not args.dry_run:
+                os.replace(path, coded)              # uncoded, or coded from another spelling of the row
+                path = coded
             record = tracks.get(spec.track_id) if spec.track_id else None
             source_file = (record.source if record is not None and record.source else None) or spec.source
             if not args.dry_run and args.format == "aiff":

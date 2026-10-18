@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
 from pathlib import Path
 
 from .manifest import LoopSpec
@@ -34,7 +35,32 @@ def loop_code(spec: LoopSpec) -> str:
     bars = f"{float(spec.bars):g}"
     identity = "|".join([spec.track_id or spec.source.stem, spec.label, getattr(spec, "kind", "loop"), bars,
                          spec.stem or "full"])
+    identity = unicodedata.normalize("NFC", identity)       # macOS file names come back NFD
     return "LC-" + hashlib.sha1(identity.encode()).hexdigest()[:8]
+
+
+CODE_SUFFIX = re.compile(r"\[LC-[0-9a-f]{8}\]$")
+
+
+def same_name(a: str, b: str) -> bool:
+    """File names compared the way APFS does: NFC and NFD spellings are the same file."""
+    return unicodedata.normalize("NFC", a) == unicodedata.normalize("NFC", b)
+
+
+def copies_of(out_dir: Path, spec: LoopSpec, fmt: str) -> list[Path]:
+    """Files in out_dir that are this loop: its plain name, or its name with any provenance code."""
+    plain = unicodedata.normalize("NFC", build_filename(spec, fmt))
+    stem = plain[: -len(fmt) - 1]
+    out_dir = Path(out_dir)
+    if not out_dir.is_dir():
+        return []
+    found = []
+    for p in out_dir.iterdir():
+        name = unicodedata.normalize("NFC", p.name)
+        if name == plain or (name.endswith("." + fmt) and CODE_SUFFIX.sub("", name[: -len(fmt) - 1]) == stem
+                             and name != plain):
+            found.append(p)
+    return sorted(found)
 
 
 def build_filename(spec: LoopSpec, fmt: str = "aiff", code: str | None = None) -> str:
