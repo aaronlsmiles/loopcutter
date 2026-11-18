@@ -1,6 +1,6 @@
 """Sample-accurate loop extraction from a manifest."""
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from .cut import cut_loop
 from .manifest import LoopSpec, load_manifest
